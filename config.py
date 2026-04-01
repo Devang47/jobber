@@ -9,15 +9,14 @@ class Config:
     server_ids: list[int]
     groq_api_key: str
     groq_model: str
-    whatsapp_phones: list[str]
+    telegram_bot_token: str
+    telegram_chat_id: int
     min_message_length: int
     prefilter_keywords: list[str]
     log_level: str
     reconnect_delay: int
     max_reconnect_attempts: int
-    whatsapp_cooldown: int
-    greenapi_instance_id: str
-    greenapi_token: str
+    telegram_cooldown: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -36,10 +35,14 @@ class Config:
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY is required in .env")
 
-        phones_raw = os.getenv("WHATSAPP_PHONE_NUMBERS", "")
-        if not phones_raw.strip():
-            raise ValueError("WHATSAPP_PHONE_NUMBERS is required in .env")
-        whatsapp_phones = [p.strip() for p in phones_raw.split(",") if p.strip()]
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if not telegram_bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN is required in .env")
+
+        telegram_chat_id_raw = os.getenv("TELEGRAM_CHAT_ID")
+        if not telegram_chat_id_raw:
+            raise ValueError("TELEGRAM_CHAT_ID is required in .env")
+        telegram_chat_id = int(telegram_chat_id_raw)
 
         keywords_raw = os.getenv(
             "PREFILTER_KEYWORDS",
@@ -51,13 +54,12 @@ class Config:
             server_ids=server_ids,
             groq_api_key=groq_api_key,
             groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            whatsapp_phones=whatsapp_phones,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
             min_message_length=int(os.getenv("MIN_MESSAGE_LENGTH", "50")),
             prefilter_keywords=[kw.strip() for kw in keywords_raw.split(",") if kw.strip()],
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             reconnect_delay=int(os.getenv("RECONNECT_DELAY_SECONDS", "5")),
             max_reconnect_attempts=int(os.getenv("MAX_RECONNECT_ATTEMPTS", "10")),
-            whatsapp_cooldown=int(os.getenv("WHATSAPP_COOLDOWN_SECONDS", "30")),
-            greenapi_instance_id=os.getenv("GREENAPI_INSTANCE_ID", ""),
-            greenapi_token=os.getenv("GREENAPI_TOKEN", ""),
+            telegram_cooldown=int(os.getenv("TELEGRAM_COOLDOWN_SECONDS", "30")),
         )

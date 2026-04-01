@@ -1,6 +1,6 @@
 """
 Fetch messages from the last 24 hours across all monitored servers,
-classify them with Groq, and send matching jobs to WhatsApp.
+classify them with Groq, and send matching jobs to Telegram.
 """
 
 import asyncio
@@ -16,7 +16,7 @@ from groq import AsyncGroq
 from config import Config
 from prefilter import PreFilter
 from classifier import JobClassifier
-from notifier import WhatsAppNotifier
+from notifier import TelegramNotifier
 from logger_setup import setup_logging
 
 logger = logging.getLogger("fetch_recent")
@@ -94,7 +94,7 @@ async def main():
 
     prefilter = PreFilter(config)
     classifier = JobClassifier(config)
-    notifier = WhatsAppNotifier(config)
+    notifier = TelegramNotifier(config)
 
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     conn = aiohttp.TCPConnector(ssl=ssl_ctx)
@@ -148,25 +148,21 @@ async def main():
 
     if not jobs_found:
         logger.info("No remote freelancing jobs found in the last 24 hours.")
-        # Send a summary to WhatsApp
+        # Send a summary to Telegram
         await send_summary(notifier, total_messages, 0)
         return
 
-    # Send each job to WhatsApp
+    # Send each job to Telegram
     for i, job in enumerate(jobs_found, 1):
-        logger.info(f"Sending job {i}/{len(jobs_found)} to WhatsApp: {job.title}")
+        logger.info(f"Sending job {i}/{len(jobs_found)} to Telegram: {job.title}")
         await notifier.notify(job)
-        await asyncio.sleep(2)  # Don't spam WhatsApp
+        await asyncio.sleep(2)  # Don't spam Telegram
 
     await send_summary(notifier, total_messages, len(jobs_found))
 
 
 async def send_summary(notifier, total_messages, jobs_count):
-    """Send a summary message to WhatsApp."""
-    import ssl as _ssl
-    import certifi as _certifi
-    import aiohttp as _aiohttp
-
+    """Send a summary message to Telegram."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     msg = (
         f"*Discord Job Monitor - 24h Scan Complete*\n\n"
@@ -174,16 +170,7 @@ async def send_summary(notifier, total_messages, jobs_count):
         f"Jobs found & sent: {jobs_count}\n"
         f"Scan time: {now}"
     )
-
-    ssl_ctx = _ssl.create_default_context(cafile=_certifi.where())
-    conn = _aiohttp.TCPConnector(ssl=ssl_ctx)
-    url = f"https://api.green-api.com/waInstance{notifier._instance_id}/sendMessage/{notifier._token}"
-    payload = {"chatId": f"{notifier._phone}@c.us", "message": msg}
-
-    async with _aiohttp.ClientSession(connector=conn) as session:
-        async with session.post(url, json=payload, ssl=ssl_ctx) as resp:
-            if resp.status == 200:
-                logger.info("Summary sent to WhatsApp")
+    await notifier.send_text(msg)
 
 
 if __name__ == "__main__":

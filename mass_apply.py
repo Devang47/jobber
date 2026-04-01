@@ -1,6 +1,6 @@
 """
 Fetch dev jobs from last 24h, generate personalized messages,
-and send everything to WhatsApp so the user can apply manually.
+and send everything to Telegram so the user can apply manually.
 """
 
 import asyncio
@@ -14,7 +14,7 @@ import certifi
 from groq import AsyncGroq
 
 from config import Config
-from notifier import WhatsAppNotifier
+from notifier import TelegramNotifier
 from logger_setup import setup_logging
 
 logger = logging.getLogger("mass_apply")
@@ -174,7 +174,7 @@ async def main():
     logger.info("  FETCHING DEV JOBS + GENERATING APPLY MESSAGES")
     logger.info("=" * 60)
 
-    notifier = WhatsAppNotifier(config)
+    notifier = TelegramNotifier(config)
     groq_client = AsyncGroq(api_key=config.groq_api_key)
 
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -248,7 +248,7 @@ async def main():
         f"Generating personalized messages for each one..."
     )
 
-    # Phase 2: Generate messages and send to WhatsApp
+    # Phase 2: Generate messages and send to Telegram
     sent = 0
     for i, job in enumerate(jobs, 1):
         logger.info(f"[{i}/{len(jobs)}] Generating message for {job['author']}...")
@@ -259,9 +259,9 @@ async def main():
         if not app_msg:
             continue
 
-        # Format the WhatsApp notification
+        # Format the Telegram notification
         content_preview = job["content"][:300].replace("*", "").replace("_", "")
-        whatsapp_msg = (
+        telegram_msg = (
             f"*JOB {i}/{len(jobs)}*\n\n"
             f"*Posted by:* @{job['author']}\n"
             f"*Channel:* #{job['channel']}\n\n"
@@ -273,9 +273,9 @@ async def main():
             f"*Open in Discord:* {job['url']}"
         )
 
-        await notifier.send_text(whatsapp_msg)
+        await notifier.send_text(telegram_msg)
         sent += 1
-        logger.info(f"  Sent to WhatsApp!")
+        logger.info(f"  Sent to Telegram!")
         await asyncio.sleep(2)
 
     # Final summary
@@ -289,7 +289,7 @@ async def main():
         f"_{now}_"
     )
 
-    logger.info(f"\nDONE — {sent} jobs with messages sent to WhatsApp")
+    logger.info(f"\nDONE — {sent} jobs with messages sent to Telegram")
 
 
 if __name__ == "__main__":

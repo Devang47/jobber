@@ -1,6 +1,6 @@
 """
 Job Pipeline — monitors Reddit + Wellfound every 2 minutes.
-Sends dev jobs to WhatsApp with personalized proposals.
+Sends dev jobs to Telegram with personalized proposals.
 Runs alongside main.py (Discord monitor).
 """
 
@@ -11,7 +11,7 @@ import signal
 from groq import AsyncGroq
 
 from config import Config
-from notifier import WhatsAppNotifier
+from notifier import TelegramNotifier
 from logger_setup import setup_logging
 from platforms.base import PlatformJob
 from platforms.reddit import fetch_reddit_jobs
@@ -69,7 +69,7 @@ async def generate_proposal(groq_client, job: PlatformJob) -> str | None:
         return None
 
 
-def format_whatsapp(job: PlatformJob, proposal: str) -> str:
+def format_telegram(job: PlatformJob, proposal: str) -> str:
     tag = "RD" if job.platform == "reddit" else "WF"
     skills_str = ", ".join(job.skills[:5]) if job.skills else "See description"
 
@@ -107,7 +107,7 @@ async def run_pipeline():
     logger.info("  JOB PIPELINE — Reddit + Wellfound")
     logger.info("=" * 60)
 
-    notifier = WhatsAppNotifier(config)
+    notifier = TelegramNotifier(config)
     groq_client = AsyncGroq(api_key=config.groq_api_key)
 
     seen_ids = {
@@ -165,7 +165,7 @@ async def run_pipeline():
                 if not proposal:
                     continue
 
-                job_card = format_whatsapp(job, proposal)
+                job_card = format_telegram(job, proposal)
                 await notifier.send_job_with_proposal(job_card, proposal)
                 await asyncio.sleep(1)
 

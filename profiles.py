@@ -1,6 +1,6 @@
 """
 Per-user profile management.
-Each user (by phone number) has their own name, GitHub, portfolio, rate, skills.
+Each user (by Telegram user ID) has their own name, GitHub, portfolio, rate, skills.
 Stored in profiles.json.
 """
 
@@ -49,37 +49,50 @@ def set_profile_field(phone: str, field: str, value: str):
     save_profiles(profiles)
 
 
-def find_phone_by_name(name: str) -> str | None:
-    """Find a phone number by profile name (case-insensitive)."""
+def find_user_by_name(name: str) -> str | None:
+    """Find a user ID by profile name (case-insensitive)."""
     profiles = load_profiles()
     name_lower = name.lower().strip()
-    for phone, profile in profiles.items():
+    for user_id, profile in profiles.items():
         if profile.get("name", "").lower().strip() == name_lower:
-            return phone
+            return user_id
     return None
 
 
 def list_all_profiles() -> str:
-    """List all registered users."""
+    """List all registered users (HTML formatted)."""
     profiles = load_profiles()
     if not profiles:
-        return "*No users registered yet.*"
-    lines = ["*Registered Users:*\n"]
-    for phone, p in profiles.items():
+        return "<b>No users registered yet.</b>"
+    lines = ["<b>Registered Users</b>\n"]
+    for user_id, p in profiles.items():
         name = p.get("name", "Unknown")
-        lines.append(f"• *{name}* — {phone}")
+        skills = p.get("skills", "")
+        entry = f"  <b>{name}</b>"
+        if skills:
+            entry += f" — {skills}"
+        lines.append(entry)
     return "\n".join(lines)
 
 
-def format_profile(phone: str) -> str:
-    p = get_profile(phone)
+def format_profile(user_id: str) -> str:
+    """Format a user's profile (HTML formatted)."""
+    p = get_profile(user_id)
     if not any(p.values()):
-        return "*No profile set yet.*\n\nSet up with:\n• *set name Your Name*\n• *set github https://github.com/you*\n• *set portfolio https://yoursite.com*\n• *set rate $20-30/hr*\n• *set skills React, Node.js, Python*"
+        return (
+            "<b>No profile set yet.</b>\n\n"
+            "Set up with:\n"
+            "  /set name Your Name\n"
+            "  /set github https://github.com/you\n"
+            "  /set portfolio https://yoursite.com\n"
+            "  /set rate $20-30/hr\n"
+            "  /set skills React, Node.js, Python"
+        )
 
-    lines = ["*Your Profile:*\n"]
-    lines.append(f"*Name:* {p.get('name') or 'Not set'}")
-    lines.append(f"*GitHub:* {p.get('github') or 'Not set'}")
-    lines.append(f"*Portfolio:* {p.get('portfolio') or 'Not set'}")
-    lines.append(f"*Rate:* {p.get('rate') or 'Not set'}")
-    lines.append(f"*Skills:* {p.get('skills') or 'Not set'}")
+    lines = ["<b>Your Profile</b>\n"]
+    lines.append(f"<b>Name:</b>  {p.get('name') or 'Not set'}")
+    lines.append(f"<b>GitHub:</b>  {p.get('github') or 'Not set'}")
+    lines.append(f"<b>Portfolio:</b>  {p.get('portfolio') or 'Not set'}")
+    lines.append(f"<b>Rate:</b>  {p.get('rate') or 'Not set'}")
+    lines.append(f"<b>Skills:</b>  {p.get('skills') or 'Not set'}")
     return "\n".join(lines)
