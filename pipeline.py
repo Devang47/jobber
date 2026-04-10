@@ -16,6 +16,7 @@ from logger_setup import setup_logging
 from platforms.base import PlatformJob
 from platforms.reddit import fetch_reddit_jobs
 from platforms.wellfound import fetch_wellfound_jobs
+from telegram_jobs import format_pipeline_job
 
 logger = logging.getLogger("pipeline")
 
@@ -67,37 +68,6 @@ async def generate_proposal(groq_client, job: PlatformJob) -> str | None:
     except Exception as e:
         logger.error(f"Proposal generation failed: {e}")
         return None
-
-
-def format_telegram(job: PlatformJob, proposal: str) -> str:
-    tag = "RD" if job.platform == "reddit" else "WF"
-    skills_str = ", ".join(job.skills[:5]) if job.skills else "See description"
-
-    lines = [
-        f"*[{tag}] {job.platform.upper()} — NEW DEV JOB*",
-        "",
-        f"*Title:* {job.title}",
-    ]
-
-    if job.posted_by:
-        lines.append(f"*Company/By:* {job.posted_by}")
-    if job.budget:
-        lines.append(f"*Budget:* {job.budget}")
-    if job.job_type:
-        lines.append(f"*Type:* {job.job_type}")
-    if job.skills:
-        lines.append(f"*Skills:* {skills_str}")
-
-    lines.extend([
-        "",
-        f"*Description:*",
-        job.description[:300],
-        "",
-        f"*Apply here:* {job.url}",
-    ])
-
-    return "\n".join(lines)
-
 
 async def run_pipeline():
     config = Config.from_env()
@@ -165,7 +135,7 @@ async def run_pipeline():
                 if not proposal:
                     continue
 
-                job_card = format_telegram(job, proposal)
+                job_card = format_pipeline_job(job)
                 await notifier.send_job_with_proposal(job_card, proposal)
                 await asyncio.sleep(1)
 

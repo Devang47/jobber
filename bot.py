@@ -16,11 +16,13 @@ from html import escape as html_escape
 
 from api_logger import log_api_event
 from config import Config
+from job_relevance import score_job
 from logger_setup import setup_logging
 from notifier import TelegramNotifier
 from platforms.base import PlatformJob
 from profiles import format_profile, get_profile, list_all_profiles, set_profile_field
 from schedule_store import ScheduleStore
+from telegram_jobs import format_ranked_platform_job
 
 logger = logging.getLogger("bot")
 
@@ -54,67 +56,6 @@ HELP_TEXT = """<b>Job Bot</b>
   /help - Show this message"""
 
 
-SKILL_WEIGHTS = {
-    "react": 10,
-    "next.js": 10,
-    "nextjs": 10,
-    "node": 8,
-    "node.js": 8,
-    "python": 9,
-    "javascript": 8,
-    "typescript": 9,
-    "vue": 7,
-    "angular": 5,
-    "django": 7,
-    "flask": 7,
-    "express": 7,
-    "full stack": 10,
-    "fullstack": 10,
-    "full-stack": 10,
-    "frontend": 8,
-    "backend": 8,
-    "web dev": 8,
-    "automation": 9,
-    "scraping": 9,
-    "web scraping": 9,
-    "bot": 9,
-    "api": 7,
-    "rest": 6,
-    "graphql": 7,
-    "websocket": 7,
-    "postgres": 6,
-    "mongodb": 6,
-    "redis": 5,
-    "firebase": 5,
-    "docker": 6,
-    "aws": 6,
-    "devops": 6,
-    "ci/cd": 5,
-    "tailwind": 6,
-    "saas": 8,
-    "landing page": 7,
-    "dashboard": 7,
-    "website": 7,
-    "web app": 8,
-    "webapp": 8,
-    "wordpress": 4,
-    "shopify": 4,
-    "laravel": 5,
-    "php": 4,
-    "mern": 9,
-    "payment": 6,
-    "stripe": 6,
-    "vercel": 5,
-}
-
-PLATFORM_TAGS = {
-    "discord": ("DC", "🔵"),
-    "reddit": ("RD", "🟠"),
-    "wellfound": ("WF", "🟣"),
-    "upwork": ("UP", "🟢"),
-    "freelancer": ("FL", "🟤"),
-}
-
 PROPOSAL_PROMPT = """Write a short proposal to apply for this freelance dev job.
 You are {name} - full stack dev.
 
@@ -142,26 +83,6 @@ Skills needed: {skills}
 Budget: {budget}
 
 Write ONLY the message, nothing else."""
-
-
-def score_job(job: PlatformJob) -> int:
-    text = (job.title + " " + job.description + " " + " ".join(job.skills)).lower()
-    score = 0
-    for skill, weight in SKILL_WEIGHTS.items():
-        if skill in text:
-            score += weight
-    return score
-
-
-def priority_label(score: int) -> tuple[str, str]:
-    if score >= 30:
-        return "PERFECT FIT", "🔥🔥🔥"
-    if score >= 20:
-        return "Great Match", "🔥🔥"
-    if score >= 10:
-        return "Good Match", "🔥"
-    return "Match", "📋"
-
 
 def _default_profile() -> dict:
     return {
@@ -614,29 +535,8 @@ class JobBot:
             await asyncio.sleep(0.2)
 
     async def send_platform_job(self, job: PlatformJob, score: int, chat_id: int, user_id: str):
-        tag, emoji = PLATFORM_TAGS.get(job.platform, ("??", "📋"))
-        label, match_emoji = priority_label(score)
-        skills_str = ", ".join(job.skills[:5]) if job.skills else "See description"
-
-        lines = [
-            f"{emoji} <b>[{tag}] {match_emoji} {label}</b>",
-            "",
-            f"<b>Title:</b> {html_escape(job.title)}",
-        ]
-        if job.posted_by:
-            lines.append(f"<b>By:</b> {html_escape(job.posted_by)}")
-        if job.budget:
-            lines.append(f"<b>Budget:</b> {html_escape(job.budget)}")
-        if job.job_type:
-            lines.append(f"<b>Type:</b> {html_escape(job.job_type)}")
-        if job.skills:
-            lines.append(f"<b>Skills:</b> {html_escape(skills_str)}")
-        if job.location:
-            lines.append(f"<b>Location:</b> {html_escape(job.location)}")
-        lines.extend(["", html_escape(job.description[:350])])
-
         proposal = await self.generate_proposal(job, get_profile(user_id))
-        job_card = "\n".join(lines)
+        job_card = format_ranked_platform_job(job, score)
         job_id = uuid.uuid4().hex[:6]
 
         if proposal:
