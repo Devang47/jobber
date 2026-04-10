@@ -29,17 +29,17 @@ class FakeNotifier:
 
     async def send_text(self, text, chat_id=None, parse_mode="HTML"):
         self.text_messages.append((chat_id, text, parse_mode))
-        return {"chat_id": chat_id, "text": text}
+        return {"ok": True, "result": {"chat_id": chat_id, "text": text}}
 
     async def send_with_buttons(self, text, buttons, chat_id=None):
         self.button_messages.append((chat_id, text, buttons))
-        return {"chat_id": chat_id, "text": text, "buttons": buttons}
+        return {"ok": True, "result": {"chat_id": chat_id, "text": text, "buttons": buttons}}
 
     async def send_job_card(self, job_card, job, job_id="", url="", chat_id=None):
         self.job_messages.append((chat_id, job_card, url))
         if chat_id is not None and job_id:
             self.pending_jobs[(chat_id, job_id)] = job
-        return {"chat_id": chat_id, "text": job_card}
+        return {"ok": True, "result": {"chat_id": chat_id, "text": job_card}}
 
     async def answer_callback(self, callback_query_id, text=""):
         self.callback_answers.append((callback_query_id, text))
@@ -208,3 +208,10 @@ class JobBotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(self.notifier.job_messages), 0)
         self.assertIn("No new jobs found", self.notifier.text_messages[-1][1])
+
+    async def test_restore_prunes_legacy_group_subscriptions(self):
+        self.store.add_subscription(-999, "discord")
+        self.store.add_subscription(-999, "freelancer")
+        await self.bot.restore_schedules()
+        self.assertFalse(self.store.get_subscriptions(-999))
+        self.assertNotIn((-999, "discord"), self.bot.scheduled_jobs)

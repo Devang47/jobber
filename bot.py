@@ -193,9 +193,20 @@ class JobBot:
         logger.info("Job Bot stopped")
 
     async def restore_schedules(self) -> None:
+        restored = 0
+        pruned_chats: set[int] = set()
         for chat_id, platform in self.schedule_store.list_subscriptions():
+            if chat_id < 0:
+                if chat_id not in pruned_chats:
+                    logger.info(
+                        f"Removing legacy group subscription chat={chat_id}; direct user chats are required now"
+                    )
+                    self.schedule_store.remove_all_subscriptions(chat_id)
+                    pruned_chats.add(chat_id)
+                continue
             self._ensure_schedule(chat_id, platform)
-        logger.info(f"Restored {len(self.scheduled_jobs)} scheduled platform jobs")
+            restored += 1
+        logger.info(f"Restored {restored} scheduled platform jobs")
 
     async def shutdown_schedules(self) -> None:
         tasks = list(self.scheduled_jobs.values())
@@ -448,6 +459,40 @@ class JobBot:
             f"Available: core, {', '.join(SUPPORTED_PLATFORMS)}, all"
         )
 
+    def _is_chat_unavailable(self, response: dict | None) -> bool:
+        if not response or response.get("ok", True):
+            return False
+        description = str(response.get("description", "")).lower()
+        return any(
+            marker in description
+            for marker in (
+                "chat not found",
+                "bot was blocked by the user",
+                "user is deactivated",
+            )
+        )
+
+    async def _deactivate_chat(self, chat_id: int, reason: str) -> None:
+        active_platforms = self.schedule_store.get_subscriptions(chat_id)
+        if not active_platforms:
+            return
+
+        logger.warning(f"Disabling subscriptions for chat={chat_id}: {reason}")
+        self.schedule_store.remove_all_subscriptions(chat_id)
+
+        current_task = asyncio.current_task()
+        for platform in active_platforms:
+            key = (chat_id, platform)
+            task = self.scheduled_jobs.get(key)
+            if task is None or task is current_task:
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            self.scheduled_jobs.pop(key, None)
+
     def _ensure_schedule(self, chat_id: int, platform: str) -> None:
         key = (chat_id, platform)
         task = self.scheduled_jobs.get(key)
@@ -587,28 +632,37 @@ class JobBot:
             return
 
         run_type = "Scheduled update" if scheduled else "Manual scan"
-        await self.notifier.send_text(
+        response = await self.notifier.send_text(
             f"<b>{run_type}: {platform.title()}</b>\n"
             f"New jobs found: {total_count}\n"
             f"Sending top {len(scored_jobs)} matches.",
             chat_id,
         )
+        if self._is_chat_unavailable(response):
+            await self._deactivate_chat(chat_id, response.get("description", "telegram chat unavailable"))
+            return
 
         for score, job in scored_jobs:
-            await self.send_platform_job(job, score, chat_id, user_id)
+            delivered = await self.send_platform_job(job, score, chat_id, user_id)
+            if not delivered:
+                return
             await asyncio.sleep(0.2)
 
     async def send_platform_job(self, job: PlatformJob, relevance: RelevanceResult, chat_id: int, user_id: str):
         del user_id
         job_card = format_ranked_platform_job(job, relevance)
         delivery_id = uuid.uuid4().hex[:6]
-        await self.notifier.send_job_card(
+        response = await self.notifier.send_job_card(
             job_card,
             job,
             job_id=delivery_id,
             url=job.url,
             chat_id=chat_id,
         )
+        if self._is_chat_unavailable(response):
+            await self._deactivate_chat(chat_id, response.get("description", "telegram chat unavailable"))
+            return False
+        return bool(response and response.get("ok"))
 
     async def generate_proposal(self, job: PlatformJob, profile: dict | None = None) -> str | None:
         selected_profile = profile if profile and profile.get("name") else _default_profile()

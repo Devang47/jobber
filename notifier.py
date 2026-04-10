@@ -76,7 +76,7 @@ class TelegramNotifier:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _request(self, method: str, **params) -> dict | None:
+    async def _request(self, method: str, **params) -> dict:
         session = await self._get_session()
         url = f"{self._base_url}/{method}"
         try:
@@ -85,12 +85,16 @@ class TelegramNotifier:
                 log_api_event("telegram", method, resp.status, payload=data)
                 if not data.get("ok"):
                     logger.error(f"Telegram API {method} error: {data}")
-                    return None
-                return data.get("result")
+                    return {
+                        "ok": False,
+                        "error_code": data.get("error_code"),
+                        "description": data.get("description", ""),
+                    }
+                return {"ok": True, "result": data.get("result")}
         except Exception as e:
             log_api_event("telegram", method, "exception", error=str(e))
             logger.error(f"Telegram {method} failed: {e}")
-            return None
+            return {"ok": False, "description": str(e), "error_kind": "exception"}
 
     async def setup_commands(self):
         """Register bot commands with Telegram so they show in the menu."""
@@ -200,9 +204,11 @@ class TelegramNotifier:
             {"text": "Open in Discord", "url": job.message_url},
         ]]
 
-        await self.send_with_buttons(message, buttons, target)
-        logger.info(f"Sent: {job.title} [{job_id}]")
-        return True
+        response = await self.send_with_buttons(message, buttons, target)
+        if response and response.get("ok"):
+            logger.info(f"Sent: {job.title} [{job_id}]")
+            return True
+        return False
 
     # --- Receiving updates ---
 
