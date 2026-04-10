@@ -5,6 +5,7 @@ from pathlib import Path
 
 from bot import JobBot
 from config import Config
+from notifier import TelegramNotifier
 from platforms.base import PlatformJob
 from schedule_store import ScheduleStore
 
@@ -78,6 +79,7 @@ def make_job(title="React dashboard build", description="Need a React developer 
         posted_time="2026-04-10T10:30:00+00:00",
         location="Remote",
         job_id="job-1",
+        source_name="forhire",
     )
 
 
@@ -215,3 +217,14 @@ class JobBotTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.restore_schedules()
         self.assertFalse(self.store.get_subscriptions(-999))
         self.assertNotIn((-999, "discord"), self.bot.scheduled_jobs)
+
+    async def test_reddit_job_card_includes_subreddit(self):
+        await self.bot.run_platform_cycle(42, "42", "reddit", scheduled=False)
+        self.assertIn("Subreddit:</b> r/forhire", self.notifier.job_messages[0][1])
+
+    async def test_reddit_job_buttons_include_start_chat(self):
+        notifier = TelegramNotifier(make_config())
+        buttons = notifier._job_buttons(make_job(), "abc123", "https://example.com/job-1")
+        button_texts = [button["text"] for button in buttons[0]]
+        self.assertEqual(button_texts, ["Open Link", "Start Chat", "Generate Proposal"])
+        self.assertIn("reddit.com/message/compose/", buttons[0][1]["url"])

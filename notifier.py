@@ -20,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-l
 from api_logger import log_api_event
 from models import JobPosting
 from config import Config
+from telegram_jobs import reddit_author_chat_url
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,20 @@ class TelegramNotifier:
             text=text,
         )
 
+    def _job_buttons(self, job: object, job_id: str, url: str) -> list[list[dict]]:
+        row = []
+        if url:
+            row.append({"text": "Open Link", "url": url})
+
+        reddit_chat_url = reddit_author_chat_url(job) if hasattr(job, "platform") else None
+        if reddit_chat_url:
+            row.append({"text": "Start Chat", "url": reddit_chat_url})
+
+        if job_id:
+            row.append({"text": "Generate Proposal", "callback_data": f"proposal_{job_id}"})
+
+        return [row] if row else []
+
     async def send_job_card(self, job_card: str, job: object, job_id: str = "", url: str = "", chat_id: int | None = None):
         """Send a job card with buttons for opening the link and generating a proposal."""
         target = self._resolve_chat_id(chat_id)
@@ -153,14 +168,7 @@ class TelegramNotifier:
         if job_id:
             self.pending_jobs[(target, job_id)] = job
 
-        buttons = []
-        row = []
-        if url:
-            row.append({"text": "Open Link", "url": url})
-        if job_id:
-            row.append({"text": "Generate Proposal", "callback_data": f"proposal_{job_id}"})
-        if row:
-            buttons.append(row)
+        buttons = self._job_buttons(job, job_id, url)
 
         if buttons:
             return await self.send_with_buttons(job_card, buttons, target)

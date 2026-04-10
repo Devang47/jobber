@@ -116,6 +116,7 @@ async def fetch_reddit_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                                 posted_time=datetime.fromtimestamp(created, timezone.utc).isoformat() if created else None,
                                 location="Remote",
                                 job_id=post_id,
+                                source_name=sub,
                             ))
                     elif resp.status == 429:
                         log_api_event("reddit", "listings", resp.status, subreddit=sub)

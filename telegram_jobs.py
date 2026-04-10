@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import escape as html_escape
+from urllib.parse import urlencode
 
 from job_relevance import RelevanceResult
 from platforms.base import PlatformJob
@@ -51,6 +52,8 @@ def format_ranked_platform_job(job: PlatformJob, relevance: RelevanceResult) -> 
     ]
     if job.posted_by:
         lines.append(f"<b>By:</b> {html_escape(job.posted_by)}")
+    if job.platform == "reddit" and job.source_name:
+        lines.append(f"<b>Subreddit:</b> r/{html_escape(job.source_name)}")
     if job.budget:
         lines.append(f"<b>Budget:</b> {html_escape(job.budget)}")
     if job.job_type:
@@ -65,6 +68,28 @@ def format_ranked_platform_job(job: PlatformJob, relevance: RelevanceResult) -> 
         html_escape(description),
     ])
     return "\n".join(lines)
+
+
+def reddit_author_chat_url(job: PlatformJob) -> str | None:
+    if job.platform != "reddit" or not job.posted_by:
+        return None
+
+    username = job.posted_by.removeprefix("u/").strip()
+    if not username:
+        return None
+
+    subject = f"Regarding your Reddit job post: {job.title[:80]}"
+    body = "Hi, I'm reaching out about your job post on Reddit."
+    if job.source_name:
+        body = f"Hi, I'm reaching out about your job post in r/{job.source_name}."
+
+    return "https://www.reddit.com/message/compose/?" + urlencode(
+        {
+            "to": username,
+            "subject": subject,
+            "message": body,
+        }
+    )
 
 
 def format_pipeline_job(job: PlatformJob) -> str:

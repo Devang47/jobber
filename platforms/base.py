@@ -18,3 +18,4 @@ class PlatformJob:
     posted_time: Optional[str]
     location: Optional[str]
     job_id: str             # Unique ID to avoid duplicates
+    source_name: Optional[str] = None
