@@ -49,16 +49,6 @@ def set_profile_field(phone: str, field: str, value: str):
     save_profiles(profiles)
 
 
-def find_user_by_name(name: str) -> str | None:
-    """Find a user ID by profile name (case-insensitive)."""
-    profiles = load_profiles()
-    name_lower = name.lower().strip()
-    for user_id, profile in profiles.items():
-        if profile.get("name", "").lower().strip() == name_lower:
-            return user_id
-    return None
-
-
 def list_all_profiles() -> str:
     """List all registered users (HTML formatted)."""
     profiles = load_profiles()

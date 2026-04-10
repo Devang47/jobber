@@ -7,7 +7,7 @@ from typing import Optional
 @dataclass
 class PlatformJob:
     """Standardized job format across all platforms."""
-    platform: str           # "upwork", "freelancer", "reddit", "indeed", "dice"
+    platform: str           # "discord", "reddit", "wellfound", "upwork", "freelancer"
     title: str
     description: str
     skills: list[str]

@@ -7,6 +7,7 @@ A Telegram-controlled bot that schedules platform scans every 15 minutes, proces
 - **Core bundle**: Discord + Reddit run together as the primary workflow
 - **Optional add-ons**: Wellfound, Upwork, and Freelancer.com can be enabled separately
 - **Telegram controlled**: Start and stop scheduled platform scans, run manual scans, and manage profiles from Telegram
+- **Rule-based screening**: Discord and Reddit jobs are filtered without AI before delivery
 - **On-demand AI proposals**: Generate a custom proposal only when you press the Telegram button
 - **Strict relevance filtering**: Sends only software engineering, web development, and full stack jobs
 - **Multi-user profiles**: Stores a separate name, portfolio, GitHub, rate, and skills per Telegram user
@@ -64,7 +65,7 @@ Required values:
 
 - `DISCORD_TOKEN`: Personal Discord token used for gateway and API access
 - `DISCORD_SERVER_IDS`: Comma-separated Discord server IDs to monitor
-- `GROQ_API_KEY`: Groq API key for classification and proposal generation
+- `GROQ_API_KEY`: Groq API key for proposal generation
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token from `@BotFather`
 
 Optional values:
@@ -142,8 +143,6 @@ platforms/
   upwork.py         - Upwork RSS monitor
   freelancer_api.py - Freelancer.com API monitor
   discord_history.py - Scheduled Discord history fetcher
-  indeed.py         - Indeed fetcher
-  dice.py           - Dice fetcher
 ```
 
 ## Platforms Monitored

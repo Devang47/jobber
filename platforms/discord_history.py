@@ -169,8 +169,6 @@ async def fetch_discord_jobs(config: Config, seen_ids: set[str]) -> list[Platfor
                             job_id=message_id,
                         )
                     )
-                    await asyncio.sleep(0.2)
-
     log_api_event(
         "discord",
         "history_run",

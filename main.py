@@ -146,7 +146,7 @@ async def main():
                 if args.debug:
                     logger.debug(f"  Content: {content[:200]}")
 
-                # Step 2: Classify with Groq
+                # Step 2: Rule-based classification
                 job = await classifier.classify(message)
                 if job is None:
                     logger.debug(f"Not a dev job, skipping: {author} in #{channel}")

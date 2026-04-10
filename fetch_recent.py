@@ -1,6 +1,6 @@
 """
 Fetch messages from the last 24 hours across all monitored servers,
-classify them with Groq, and send matching jobs to Telegram.
+classify them deterministically, and send matching jobs to Telegram.
 """
 
 import asyncio
@@ -136,8 +136,6 @@ async def main():
                     if job:
                         jobs_found.append(job)
                         logger.info(f"    JOB FOUND: {job.title}")
-
-                    await asyncio.sleep(0.5)  # Groq rate limit
 
     logger.info(f"\n=== Results ===")
     logger.info(f"Total messages scanned: {total_messages}")
