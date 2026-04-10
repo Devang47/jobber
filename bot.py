@@ -16,7 +16,7 @@ from html import escape as html_escape
 
 from api_logger import log_api_event
 from config import Config
-from job_relevance import score_job
+from job_relevance import RelevanceResult, evaluate_job
 from logger_setup import setup_logging
 from notifier import TelegramNotifier
 from platforms.base import PlatformJob
@@ -26,21 +26,29 @@ from telegram_jobs import format_ranked_platform_job
 
 logger = logging.getLogger("bot")
 
-SUPPORTED_PLATFORMS = ("discord", "reddit", "wellfound", "upwork", "freelancer")
+CORE_PLATFORMS = ("discord", "reddit")
+OPTIONAL_PLATFORMS = ("wellfound", "upwork", "freelancer")
+SUPPORTED_PLATFORMS = CORE_PLATFORMS + OPTIONAL_PLATFORMS
 MAX_JOBS_PER_RUN = 10
 
 HELP_TEXT = """<b>Job Bot</b>
 
-<b>Scheduling:</b>
-  /start reddit - Schedule Reddit updates every 15 minutes
-  /start discord - Schedule Discord history scans every 15 minutes
-  /start all - Schedule all supported platforms
-  /stop reddit - Stop a scheduled platform
-  /stop all - Stop all scheduled platforms for this chat
+<b>Primary Workflow:</b>
+  /start - Schedule the core bundle (Discord + Reddit) every 15 minutes
+  /scan - Run your subscribed platforms now, or the core bundle if nothing is subscribed
+  /stop core - Stop the core bundle
+
+<b>Bundles And Platforms:</b>
+  /start core - Schedule Discord + Reddit together
+  /start upwork - Add one optional platform
+  /start wellfound - Add one optional platform
+  /start freelancer - Add one optional platform
+  /start all - Schedule everything
+  /stop [core|discord|reddit|wellfound|upwork|freelancer|all]
   /status - Show active schedules and last run info
 
 <b>Manual Runs:</b>
-  /scan - Run all subscribed platforms once right now
+  /scan core - Run Discord + Reddit once right now
   /scan upwork - Run one platform once right now
 
 <b>Your Profile:</b>
@@ -204,14 +212,41 @@ class JobBot:
         callback_id = callback.get("id", "")
         data = callback.get("data", "")
         chat_id = callback.get("message", {}).get("chat", {}).get("id")
+        user_id = str(callback.get("from", {}).get("id", ""))
 
         if data.startswith("copy_"):
-            proposal = self.notifier.pending_proposals.get(data[5:])
+            proposal = self.notifier.pending_proposals.get((chat_id, data[5:]))
             if proposal:
                 await self.notifier.send_text(proposal, chat_id, parse_mode="")
                 await self.notifier.answer_callback(callback_id, "Proposal sent below.")
             else:
                 await self.notifier.answer_callback(callback_id, "Proposal expired or not found.")
+            return
+
+        if data.startswith("proposal_") and chat_id is not None:
+            delivery_id = data[9:]
+            cached = self.notifier.pending_proposals.get((chat_id, delivery_id))
+            if cached:
+                await self.notifier.answer_callback(callback_id, "Proposal ready.")
+                await self.notifier.send_text(cached, chat_id, parse_mode="")
+                return
+
+            job = self.notifier.pending_jobs.get((chat_id, delivery_id))
+            if job is None:
+                await self.notifier.answer_callback(callback_id, "Job expired or not found.")
+                return
+
+            await self.notifier.answer_callback(callback_id, "Generating proposal...")
+            proposal = await self.generate_proposal(job, get_profile(user_id))
+            if not proposal:
+                await self.notifier.send_text(
+                    "Could not generate a proposal right now. Please try again in a moment.",
+                    chat_id,
+                )
+                return
+
+            self.notifier.pending_proposals[(chat_id, delivery_id)] = proposal
+            await self.notifier.send_text(proposal, chat_id, parse_mode="")
             return
 
         await self.notifier.answer_callback(callback_id)
@@ -225,8 +260,10 @@ class JobBot:
 
         logger.info(f"Command from {user_id} in {chat_id}: {normalized}")
 
-        if normalized in {"/help", "/start"}:
+        if normalized == "/help":
             await self.notifier.send_text(HELP_TEXT, chat_id)
+        elif normalized == "/start":
+            await self.handle_start(chat_id, "core")
         elif normalized == "/status":
             await self.send_status(chat_id)
         elif normalized == "/users":
@@ -235,12 +272,16 @@ class JobBot:
             await self.notifier.send_text(format_profile(user_id), chat_id)
         elif normalized.startswith("/set "):
             await self.handle_set(normalized[5:].strip(), user_id, command[5:].strip(), chat_id)
-        elif normalized.startswith("/scan"):
+        elif normalized == "/scan":
+            await self.handle_scan(chat_id, user_id, "")
+        elif normalized.startswith("/scan "):
             platform = normalized[5:].strip() if len(normalized) > 5 else ""
             await self.handle_scan(chat_id, user_id, platform)
         elif normalized.startswith("/start "):
             platform = normalized[7:].strip()
             await self.handle_start(chat_id, platform)
+        elif normalized == "/stop":
+            await self.handle_stop(chat_id, "core")
         elif normalized.startswith("/stop "):
             platform = normalized[6:].strip()
             await self.handle_stop(chat_id, platform)
@@ -311,18 +352,30 @@ class JobBot:
             return
 
         platforms = self._resolve_platforms(platform_arg)
-        if platforms is None or len(platforms) != 1:
+        if platforms is None:
             await self.notifier.send_text(self._platform_usage_text("stop"), chat_id)
             return
 
-        platform = platforms[0]
-        if not self.schedule_store.is_subscribed(chat_id, platform):
-            await self.notifier.send_text(f"{platform.title()} is not currently scheduled.", chat_id)
-            return
+        stopped = []
+        not_running = []
+        for platform in platforms:
+            if not self.schedule_store.is_subscribed(chat_id, platform):
+                not_running.append(platform)
+                continue
+            self.schedule_store.remove_subscription(chat_id, platform)
+            await self._cancel_schedule(chat_id, platform)
+            stopped.append(platform)
 
-        self.schedule_store.remove_subscription(chat_id, platform)
-        await self._cancel_schedule(chat_id, platform)
-        await self.notifier.send_text(f"Stopped scheduled updates for <b>{platform.title()}</b>.", chat_id)
+        lines = []
+        if stopped:
+            lines.append(
+                f"Stopped scheduled updates for <b>{html_escape(', '.join(platform.title() for platform in stopped))}</b>."
+            )
+        if not_running:
+            lines.append(
+                f"Not currently scheduled: <b>{html_escape(', '.join(platform.title() for platform in not_running))}</b>."
+            )
+        await self.notifier.send_text("\n".join(lines), chat_id)
 
     async def handle_scan(self, chat_id: int, user_id: str, platform_arg: str):
         if platform_arg:
@@ -331,7 +384,7 @@ class JobBot:
                 await self.notifier.send_text(self._platform_usage_text("scan"), chat_id)
                 return
         else:
-            platforms = self.schedule_store.get_subscriptions(chat_id) or list(SUPPORTED_PLATFORMS)
+            platforms = self.schedule_store.get_subscriptions(chat_id) or list(CORE_PLATFORMS)
 
         await self.notifier.send_text(
             f"Running an immediate scan for: <b>{html_escape(', '.join(p.title() for p in platforms))}</b>.",
@@ -343,7 +396,7 @@ class JobBot:
     async def send_status(self, chat_id: int):
         subscriptions = self.schedule_store.get_subscriptions(chat_id)
         if not subscriptions:
-            await self.notifier.send_text("No active schedules for this chat. Use /start <platform>.", chat_id)
+            await self.notifier.send_text("No active schedules for this chat. Use /start or /start core.", chat_id)
             return
 
         lines = ["<b>Scheduled Platforms</b>"]
@@ -381,6 +434,8 @@ class JobBot:
         platform = platform_arg.strip().lower()
         if not platform:
             return None
+        if platform in {"core", "primary"}:
+            return list(CORE_PLATFORMS)
         if platform == "all":
             return list(SUPPORTED_PLATFORMS)
         if platform not in SUPPORTED_PLATFORMS:
@@ -390,7 +445,7 @@ class JobBot:
     def _platform_usage_text(self, verb: str) -> str:
         return (
             f"Usage: /{verb} <platform>\n"
-            f"Available: {', '.join(SUPPORTED_PLATFORMS)}, all"
+            f"Available: core, {', '.join(SUPPORTED_PLATFORMS)}, all"
         )
 
     def _ensure_schedule(self, chat_id: int, platform: str) -> None:
@@ -457,7 +512,16 @@ class JobBot:
         try:
             jobs = await fetcher(seen_ids)
             self.schedule_store.set_seen_ids(chat_id, platform, seen_ids)
-            scored_jobs = sorted(((score_job(job), job) for job in jobs), key=lambda item: item[0], reverse=True)
+            scored_jobs = sorted(
+                (
+                    (relevance, job)
+                    for job in jobs
+                    for relevance in [evaluate_job(job)]
+                    if relevance.eligible
+                ),
+                key=lambda item: item[0].score,
+                reverse=True,
+            )
             limited_jobs = scored_jobs[:MAX_JOBS_PER_RUN]
 
             await self._send_run_results(chat_id, user_id, platform, limited_jobs, len(scored_jobs), scheduled=scheduled)
@@ -509,7 +573,7 @@ class JobBot:
         chat_id: int,
         user_id: str,
         platform: str,
-        scored_jobs: list[tuple[int, PlatformJob]],
+        scored_jobs: list[tuple[RelevanceResult, PlatformJob]],
         total_count: int,
         *,
         scheduled: bool,
@@ -534,23 +598,17 @@ class JobBot:
             await self.send_platform_job(job, score, chat_id, user_id)
             await asyncio.sleep(0.2)
 
-    async def send_platform_job(self, job: PlatformJob, score: int, chat_id: int, user_id: str):
-        proposal = await self.generate_proposal(job, get_profile(user_id))
-        job_card = format_ranked_platform_job(job, score)
-        job_id = uuid.uuid4().hex[:6]
-
-        if proposal:
-            await self.notifier.send_job_with_proposal(
-                job_card,
-                proposal,
-                job_id=job_id,
-                url=job.url,
-                chat_id=chat_id,
-            )
-            return
-
-        buttons = [[{"text": "Open Link", "url": job.url}]]
-        await self.notifier.send_with_buttons(job_card, buttons, chat_id)
+    async def send_platform_job(self, job: PlatformJob, relevance: RelevanceResult, chat_id: int, user_id: str):
+        del user_id
+        job_card = format_ranked_platform_job(job, relevance)
+        delivery_id = uuid.uuid4().hex[:6]
+        await self.notifier.send_job_card(
+            job_card,
+            job,
+            job_id=delivery_id,
+            url=job.url,
+            chat_id=chat_id,
+        )
 
     async def generate_proposal(self, job: PlatformJob, profile: dict | None = None) -> str | None:
         selected_profile = profile if profile and profile.get("name") else _default_profile()

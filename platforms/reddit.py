@@ -4,6 +4,7 @@ import logging
 import re
 import ssl
 import time
+from datetime import datetime, timezone
 
 try:
     import aiohttp
@@ -112,7 +113,7 @@ async def fetch_reddit_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                                 job_type=None,
                                 url=f"https://reddit.com{permalink}",
                                 posted_by=f"u/{author}",
-                                posted_time=None,
+                                posted_time=datetime.fromtimestamp(created, timezone.utc).isoformat() if created else None,
                                 location="Remote",
                                 job_id=post_id,
                             ))

@@ -66,7 +66,7 @@ async def telegram_reply_listener(notifier: TelegramNotifier, shutdown_event: as
 
 async def handle_open(notifier: TelegramNotifier, job_id: str, chat_id: int):
     """Handle an open command from Telegram."""
-    job = notifier.pending_jobs.get(job_id)
+    job = notifier.pending_jobs.get((chat_id, job_id))
     if not job:
         await notifier.send_text(f"Job *{job_id}* not found or expired.", chat_id)
         return

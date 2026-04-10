@@ -28,9 +28,9 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}"
 # Bot commands to register with Telegram
 BOT_COMMANDS = [
     {"command": "help", "description": "Show all commands"},
-    {"command": "start", "description": "Schedule a platform every 15 minutes"},
-    {"command": "stop", "description": "Stop scheduled platform updates"},
-    {"command": "scan", "description": "Run an immediate one-time platform scan"},
+    {"command": "start", "description": "Schedule the core bundle"},
+    {"command": "stop", "description": "Stop core or other scheduled platforms"},
+    {"command": "scan", "description": "Run an immediate scan"},
     {"command": "status", "description": "Show active scheduled platforms"},
     {"command": "profile", "description": "View your profile"},
     {"command": "set", "description": "Set profile field (name/github/portfolio/rate/skills)"},
@@ -44,7 +44,7 @@ def html_escape(text: str) -> str:
 
 
 class TelegramNotifier:
-    """Send notifications to a Telegram group via Bot API."""
+    """Send notifications to Telegram chats via Bot API."""
 
     def __init__(self, config: Config):
         self._token = config.telegram_bot_token
@@ -52,9 +52,8 @@ class TelegramNotifier:
         self._base_url = TELEGRAM_API.format(token=self._token)
         self._update_offset = 0
         self._session: aiohttp.ClientSession | None = None
-        self.pending_jobs: dict[str, JobPosting] = {}
-        # Store proposals keyed by job_id for "Copy Proposal" button
-        self.pending_proposals: dict[str, str] = {}
+        self.pending_jobs: dict[tuple[int, str], object] = {}
+        self.pending_proposals: dict[tuple[int, str], str] = {}
 
     def _ssl_ctx(self):
         if certifi is None:
@@ -98,11 +97,19 @@ class TelegramNotifier:
         await self._request("setMyCommands", commands=BOT_COMMANDS)
         logger.info("Bot commands registered with Telegram")
 
+    def _resolve_chat_id(self, chat_id: int | None) -> int | None:
+        target = chat_id if chat_id is not None else self._chat_id
+        if target is None:
+            logger.warning("Skipping Telegram send because no target chat_id was provided")
+        return target
+
     # --- Sending messages ---
 
     async def send_text(self, text: str, chat_id: int | None = None, parse_mode: str = "HTML") -> dict | None:
         """Send a text message."""
-        target = chat_id or self._chat_id
+        target = self._resolve_chat_id(chat_id)
+        if target is None:
+            return None
         return await self._request(
             "sendMessage",
             chat_id=target,
@@ -113,7 +120,9 @@ class TelegramNotifier:
 
     async def send_with_buttons(self, text: str, buttons: list[list[dict]], chat_id: int | None = None) -> dict | None:
         """Send a message with an inline keyboard."""
-        target = chat_id or self._chat_id
+        target = self._resolve_chat_id(chat_id)
+        if target is None:
+            return None
         return await self._request(
             "sendMessage",
             chat_id=target,
@@ -131,12 +140,37 @@ class TelegramNotifier:
             text=text,
         )
 
+    async def send_job_card(self, job_card: str, job: object, job_id: str = "", url: str = "", chat_id: int | None = None):
+        """Send a job card with buttons for opening the link and generating a proposal."""
+        target = self._resolve_chat_id(chat_id)
+        if target is None:
+            return None
+
+        if job_id:
+            self.pending_jobs[(target, job_id)] = job
+
+        buttons = []
+        row = []
+        if url:
+            row.append({"text": "Open Link", "url": url})
+        if job_id:
+            row.append({"text": "Generate Proposal", "callback_data": f"proposal_{job_id}"})
+        if row:
+            buttons.append(row)
+
+        if buttons:
+            return await self.send_with_buttons(job_card, buttons, target)
+        return await self.send_text(job_card, target)
+
     async def send_job_with_proposal(self, job_card: str, proposal: str, job_id: str = "",
                                      url: str = "", chat_id: int | None = None):
         """Send a single job card with inline buttons for Open Link and Copy Proposal."""
-        # Store proposal for callback
+        target = self._resolve_chat_id(chat_id)
+        if target is None:
+            return None
+
         if job_id:
-            self.pending_proposals[job_id] = proposal
+            self.pending_proposals[(target, job_id)] = proposal
 
         buttons = []
         row = []
@@ -148,22 +182,25 @@ class TelegramNotifier:
             buttons.append(row)
 
         if buttons:
-            await self.send_with_buttons(job_card, buttons, chat_id)
-        else:
-            await self.send_text(job_card, chat_id)
+            return await self.send_with_buttons(job_card, buttons, target)
+        return await self.send_text(job_card, target)
 
-    async def notify(self, job: JobPosting) -> bool:
+    async def notify(self, job: JobPosting, chat_id: int | None = None) -> bool:
         """Send a Discord job notification with inline buttons."""
+        target = self._resolve_chat_id(chat_id)
+        if target is None:
+            return False
+
         job_id = uuid.uuid4().hex[:6]
         job.job_id = job_id
-        self.pending_jobs[job_id] = job
+        self.pending_jobs[(target, job_id)] = job
         message = self._format_job_html(job)
 
         buttons = [[
             {"text": "Open in Discord", "url": job.message_url},
         ]]
 
-        await self.send_with_buttons(message, buttons)
+        await self.send_with_buttons(message, buttons, target)
         logger.info(f"Sent: {job.title} [{job_id}]")
         return True
 

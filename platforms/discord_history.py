@@ -164,7 +164,7 @@ async def fetch_discord_jobs(config: Config, seen_ids: set[str]) -> list[Platfor
                             job_type=classified.job_type,
                             url=classified.message_url,
                             posted_by=classified.source_author,
-                            posted_time=None,
+                            posted_time=message.get("timestamp"),
                             location=classified.source_server,
                             job_id=message_id,
                         )

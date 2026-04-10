@@ -15,7 +15,7 @@ class Config:
     groq_api_key: str
     groq_model: str
     telegram_bot_token: str
-    telegram_chat_id: int
+    telegram_chat_id: int | None
     min_message_length: int
     prefilter_keywords: list[str]
     log_level: str
@@ -46,10 +46,8 @@ class Config:
         if not telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required in .env")
 
-        telegram_chat_id_raw = os.getenv("TELEGRAM_CHAT_ID")
-        if not telegram_chat_id_raw:
-            raise ValueError("TELEGRAM_CHAT_ID is required in .env")
-        telegram_chat_id = int(telegram_chat_id_raw)
+        telegram_chat_id_raw = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        telegram_chat_id = int(telegram_chat_id_raw) if telegram_chat_id_raw else None
 
         keywords_raw = os.getenv(
             "PREFILTER_KEYWORDS",

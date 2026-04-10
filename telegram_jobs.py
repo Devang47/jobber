@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html import escape as html_escape
 
-from job_relevance import priority_label
+from job_relevance import RelevanceResult
 from platforms.base import PlatformJob
 
 
@@ -13,15 +15,39 @@ PLATFORM_TAGS = {
 }
 
 
-def format_ranked_platform_job(job: PlatformJob, score: int) -> str:
+def _format_posted_time(posted_time: str | None) -> str:
+    if not posted_time:
+        return "Unknown"
+
+    normalized = posted_time.strip()
+    try:
+        if normalized.endswith("Z"):
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        else:
+            parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(normalized)
+        except (TypeError, ValueError):
+            return normalized
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def format_ranked_platform_job(job: PlatformJob, relevance: RelevanceResult) -> str:
     tag, emoji = PLATFORM_TAGS.get(job.platform, ("??", "📋"))
-    label, match_emoji = priority_label(score)
     skills_str = ", ".join(job.skills[:5]) if job.skills else "See description"
+    description = job.description[:500] if job.description else "No description provided."
 
     lines = [
-        f"{emoji} <b>[{tag}] {match_emoji} {label}</b>",
+        f"{emoji} <b>[{tag}] {html_escape(relevance.rating)} Relevance</b>",
         "",
         f"<b>Title:</b> {html_escape(job.title)}",
+        f"<b>Platform:</b> {html_escape(job.platform.title())}",
+        f"<b>Posted:</b> {html_escape(_format_posted_time(job.posted_time))}",
+        f"<b>Relevance:</b> {html_escape(relevance.rating)} ({relevance.score})",
     ]
     if job.posted_by:
         lines.append(f"<b>By:</b> {html_escape(job.posted_by)}")
@@ -33,7 +59,11 @@ def format_ranked_platform_job(job: PlatformJob, score: int) -> str:
         lines.append(f"<b>Skills:</b> {html_escape(skills_str)}")
     if job.location:
         lines.append(f"<b>Location:</b> {html_escape(job.location)}")
-    lines.extend(["", html_escape(job.description[:350])])
+    lines.extend([
+        "",
+        "<b>Job Description:</b>",
+        html_escape(description),
+    ])
     return "\n".join(lines)
 
 

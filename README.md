@@ -1,15 +1,16 @@
 # Telegram Job Monitor & Multi-Platform Freelance Pipeline
 
-A Telegram-controlled bot that schedules platform scans every 15 minutes, processes fresh job matches, and sends ranked Telegram updates plus ready-to-paste proposal drafts.
+A Telegram-controlled bot that schedules platform scans every 15 minutes, processes fresh job matches, and sends ranked Telegram updates to each subscribed user chat.
 
 ## Features
 
-- **5 active platforms**: Discord, Reddit, Wellfound, Upwork, Freelancer.com
+- **Core bundle**: Discord + Reddit run together as the primary workflow
+- **Optional add-ons**: Wellfound, Upwork, and Freelancer.com can be enabled separately
 - **Telegram controlled**: Start and stop scheduled platform scans, run manual scans, and manage profiles from Telegram
-- **AI proposals**: Generates short personalized application messages with Groq
-- **Smart scoring**: Ranks jobs by skill match before sending
+- **On-demand AI proposals**: Generate a custom proposal only when you press the Telegram button
+- **Strict relevance filtering**: Sends only software engineering, web development, and full stack jobs
 - **Multi-user profiles**: Stores a separate name, portfolio, GitHub, rate, and skills per Telegram user
-- **Copy-friendly workflow**: Sends proposal text through Telegram buttons for easy manual applying
+- **Rich Telegram cards**: Includes posting date, relevance rating, description, and key job fields
 - **SQLite-backed schedules**: Restores active chat/platform schedules and dedupe state after a bot restart
 - **Persistent API logs**: Writes structured response logs under `logs/api/`
 - **Run locking**: Prevents the same chat/platform job from executing multiple times at once
@@ -18,15 +19,19 @@ A Telegram-controlled bot that schedules platform scans every 15 minutes, proces
 
 | Command | Description |
 |---|---|
+| `/start` | Schedule the core bundle: Discord + Reddit |
+| `/start core` | Schedule Discord + Reddit together |
+| `/scan` | Run subscribed platforms now, or the core bundle if nothing is subscribed |
+| `/scan core` | Run Discord + Reddit once immediately |
+| `/stop core` | Stop the core bundle |
+| `/start all` | Schedule all supported platforms |
+| `/start discord` | Schedule Discord history scans every 15 minutes |
 | `/start reddit` | Schedule Reddit updates every 15 minutes |
 | `/start wellfound` | Schedule Wellfound updates every 15 minutes |
-| `/start discord` | Schedule Discord history scans every 15 minutes |
 | `/start upwork` | Schedule Upwork updates every 15 minutes |
 | `/start freelancer` | Schedule Freelancer.com updates every 15 minutes |
-| `/start all` | Schedule all supported platforms |
 | `/stop [platform]` | Stop a specific scheduled platform |
 | `/stop all` | Stop all scheduled platforms for the current chat |
-| `/scan` | Run subscribed platforms once immediately |
 | `/scan reddit` | Run one platform once immediately |
 | `/status` | Show active schedules and last run state |
 | `/users` | List registered users |
@@ -61,7 +66,6 @@ Required values:
 - `DISCORD_SERVER_IDS`: Comma-separated Discord server IDs to monitor
 - `GROQ_API_KEY`: Groq API key for classification and proposal generation
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token from `@BotFather`
-- `TELEGRAM_CHAT_ID`: Telegram group or chat ID where alerts should be delivered
 
 Optional values:
 
@@ -146,8 +150,8 @@ platforms/
 
 | Platform | Method | Default cadence |
 |---|---|---|
-| Discord | Gateway WebSocket | Real time |
-| Reddit | JSON API | Every 2 minutes |
+| Discord | History scan / gateway | Every 15 minutes in core bundle |
+| Reddit | JSON API | Every 15 minutes in core bundle |
 | Wellfound | HTML scraping | Every 2 minutes |
 | Upwork | RSS feeds | Every 2 minutes |
 | Freelancer | Public API | Every 2 minutes |
