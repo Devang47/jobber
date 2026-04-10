@@ -1,51 +1,50 @@
-# Discord Job Monitor & Multi-Platform Freelance Pipeline
+# Telegram Job Monitor & Multi-Platform Freelance Pipeline
 
-A WhatsApp-controlled bot that monitors multiple platforms for freelance developer jobs and sends personalized proposals to your phone — ready to copy and apply.
+A Telegram-controlled bot that schedules platform scans every 15 minutes, processes fresh job matches, and sends ranked Telegram updates plus ready-to-paste proposal drafts.
 
 ## Features
 
-- **5 Platforms**: Discord, Reddit, Wellfound, Upwork, Freelancer.com
-- **WhatsApp Controlled**: Start/stop platforms, scan jobs, manage profiles — all from WhatsApp
-- **AI Proposals**: Auto-generates personalized, human-sounding application messages using Groq (Llama 3.1)
-- **Smart Scoring**: Jobs ranked by skill match (🔥🔥🔥 = perfect fit)
-- **Multi-User**: Multiple people can use the bot with their own profiles (name, GitHub, portfolio, skills)
-- **Copyable Messages**: Proposals sent as separate messages for easy copy-paste
-- **User Targeting**: Route alerts to specific users by name
-- **24/7 Background Service**: Runs as macOS Launch Agent, survives terminal close and reboots
+- **5 active platforms**: Discord, Reddit, Wellfound, Upwork, Freelancer.com
+- **Telegram controlled**: Start and stop scheduled platform scans, run manual scans, and manage profiles from Telegram
+- **AI proposals**: Generates short personalized application messages with Groq
+- **Smart scoring**: Ranks jobs by skill match before sending
+- **Multi-user profiles**: Stores a separate name, portfolio, GitHub, rate, and skills per Telegram user
+- **Copy-friendly workflow**: Sends proposal text through Telegram buttons for easy manual applying
+- **SQLite-backed schedules**: Restores active chat/platform schedules and dedupe state after a bot restart
+- **Persistent API logs**: Writes structured response logs under `logs/api/`
+- **Run locking**: Prevents the same chat/platform job from executing multiple times at once
 
-## WhatsApp Commands
+## Telegram Commands
 
 | Command | Description |
 |---|---|
-| `start reddit` | Start monitoring Reddit (12 dev subreddits) |
-| `start wellfound` | Start monitoring Wellfound startup jobs |
-| `start discord` | Start monitoring 9 Discord freelance servers |
-| `start upwork` | Start monitoring Upwork RSS feeds |
-| `start freelancer` | Start monitoring Freelancer.com API |
-| `start all` | Start all platforms |
-| `stop [platform]` | Stop a specific platform |
-| `stop all` | Stop everything |
-| `scan` | One-time scan, send to everyone |
-| `scan Manas` | Scan and send only to Manas |
-| `alert Dev` | Route live alerts to Dev only |
-| `alert all` | Send alerts to everyone (default) |
-| `status` | Show which platforms are running |
-| `users` | List registered users |
-| `profile` | View your profile |
-| `set name Your Name` | Set your display name |
-| `set github https://github.com/you` | Set your GitHub |
-| `set portfolio https://yoursite.com` | Set your portfolio |
-| `set rate $20-30/hr` | Set your hourly rate |
-| `set skills React, Node, Python` | Set your skills |
-| `help` | Show all commands |
+| `/start reddit` | Schedule Reddit updates every 15 minutes |
+| `/start wellfound` | Schedule Wellfound updates every 15 minutes |
+| `/start discord` | Schedule Discord history scans every 15 minutes |
+| `/start upwork` | Schedule Upwork updates every 15 minutes |
+| `/start freelancer` | Schedule Freelancer.com updates every 15 minutes |
+| `/start all` | Schedule all supported platforms |
+| `/stop [platform]` | Stop a specific scheduled platform |
+| `/stop all` | Stop all scheduled platforms for the current chat |
+| `/scan` | Run subscribed platforms once immediately |
+| `/scan reddit` | Run one platform once immediately |
+| `/status` | Show active schedules and last run state |
+| `/users` | List registered users |
+| `/profile` | View your saved profile |
+| `/set name Your Name` | Set your display name |
+| `/set github https://github.com/you` | Set your GitHub URL |
+| `/set portfolio https://yoursite.com` | Set your portfolio URL |
+| `/set rate $20-30/hr` | Set your hourly rate |
+| `/set skills React, Node, Python` | Set your skills |
+| `/help` | Show command help |
 
 ## Setup
 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/singhalmanas23/discord-job-monitor.git
-cd discord-job-monitor
+git clone <your-repo-url>
+cd jobber
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -56,87 +55,99 @@ python3 -m venv .venv
 cp .env.example .env
 ```
 
-Fill in:
-- **DISCORD_TOKEN**: Your personal Discord token (browser DevTools > Network tab > Authorization header)
-- **GROQ_API_KEY**: Free API key from [console.groq.com](https://console.groq.com)
-- **GREENAPI_INSTANCE_ID** + **GREENAPI_TOKEN**: Free from [green-api.com](https://green-api.com) (scan QR code with WhatsApp)
-- **WHATSAPP_PHONE_NUMBERS**: Comma-separated numbers to receive alerts
+Required values:
 
-### 3. Enable Green API notifications
+- `DISCORD_TOKEN`: Personal Discord token used for gateway and API access
+- `DISCORD_SERVER_IDS`: Comma-separated Discord server IDs to monitor
+- `GROQ_API_KEY`: Groq API key for classification and proposal generation
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token from `@BotFather`
+- `TELEGRAM_CHAT_ID`: Telegram group or chat ID where alerts should be delivered
 
-Go to Green API dashboard and enable:
-- Incoming webhook: **yes**
-- Outgoing message webhook: **yes**
+Optional values:
 
-### 4. Run
+- `GROQ_MODEL`: Defaults to `llama-3.3-70b-versatile`
+- `MIN_MESSAGE_LENGTH`
+- `PREFILTER_KEYWORDS`
+- `LOG_LEVEL`
+- `RECONNECT_DELAY_SECONDS`
+- `MAX_RECONNECT_ATTEMPTS`
+- `TELEGRAM_COOLDOWN_SECONDS`
+- `SCHEDULE_INTERVAL_SECONDS`
+- `SCHEDULE_DB_PATH`
+
+### 3. Run
 
 ```bash
-# Interactive
+# Full Telegram-controlled bot
 .venv/bin/python3 bot.py
 
-# Background (survives terminal close)
-nohup .venv/bin/python3 bot.py > logs/bot.log 2>&1 &
+# Discord-only live monitor
+.venv/bin/python3 main.py
+
+# Reddit + Wellfound polling pipeline
+.venv/bin/python3 pipeline.py
+
+# One-time Discord history scan
+.venv/bin/python3 fetch_recent.py
 ```
 
-### 5. macOS Background Service (optional, auto-starts on boot)
+## Logs And State
+
+- `schedule_state.db` stores active chat/platform schedules, dedupe state, and active run locks
+- `logs/monitor.log` stores application logs
+- `logs/api/*.jsonl` stores persistent structured API response logs
+
+## Tests
 
 ```bash
-# Copy the plist (edit paths if needed)
-cp com.manas.jobbot.plist ~/Library/LaunchAgents/
-
-# Start
-launchctl load ~/Library/LaunchAgents/com.manas.jobbot.plist
-
-# Stop
-launchctl unload ~/Library/LaunchAgents/com.manas.jobbot.plist
-
-# Check logs
-tail -f logs/bot.err.log
+python3 -m unittest discover -s tests
 ```
 
-## Architecture
+## Project Layout
 
-```
-bot.py              — Main WhatsApp-controlled bot (entry point)
-main.py             — Standalone Discord monitor
-pipeline.py         — Standalone Reddit + Wellfound pipeline
-mass_apply.py       — One-time mass scan + apply
-fetch_recent.py     — Fetch last 24h from Discord servers
-config.py           — .env loader
-discord_gateway.py  — Discord WebSocket gateway client
-classifier.py       — Groq AI job classification
-prefilter.py        — Keyword pre-filter (reduces API calls)
-notifier.py         — WhatsApp notifications via Green API
-auto_apply.py       — Auto-generate proposals + Discord DM
-profiles.py         — Per-user profile management
-models.py           — Data models
-logger_setup.py     — Logging config
+```text
+bot.py              - Telegram-controlled scheduler and delivery pipeline
+main.py             - Standalone Discord live monitor
+pipeline.py         - Standalone Reddit + Wellfound polling pipeline
+mass_apply.py       - One-time mass scan plus proposal generation
+fetch_recent.py     - Scan the last 24 hours of Discord messages
+config.py           - Environment loading and runtime config
+schedule_store.py   - Persistent scheduler state and dedupe storage
+api_logger.py       - Structured API response logging
+discord_gateway.py  - Discord Gateway client
+classifier.py       - Groq-based job classification
+prefilter.py        - Keyword pre-filter before AI classification
+notifier.py         - Telegram Bot API notifications
+auto_apply.py       - Proposal generation and Discord DM sending
+profiles.py         - Per-user Telegram profile storage
+models.py           - Shared data models
 platforms/
-  base.py           — Platform job data model
-  reddit.py         — Reddit monitor (12 subreddits)
-  wellfound.py      — Wellfound/AngelList monitor
-  upwork.py         — Upwork RSS feed monitor
-  freelancer_api.py — Freelancer.com API monitor
-  indeed.py         — Indeed scraper
-  dice.py           — Dice API monitor
+  base.py           - Shared platform job model
+  reddit.py         - Reddit monitor
+  wellfound.py      - Wellfound monitor
+  upwork.py         - Upwork RSS monitor
+  freelancer_api.py - Freelancer.com API monitor
+  discord_history.py - Scheduled Discord history fetcher
+  indeed.py         - Indeed fetcher
+  dice.py           - Dice fetcher
 ```
 
 ## Platforms Monitored
 
-| Platform | Method | Poll Rate |
+| Platform | Method | Default cadence |
 |---|---|---|
-| Discord | WebSocket (real-time) | Instant |
-| Reddit | JSON API (12 subreddits) | Every 2 min |
-| Wellfound | HTML scraping | Every 2 min |
-| Upwork | RSS feeds | Every 2 min |
-| Freelancer | Public API | Every 2 min |
+| Discord | Gateway WebSocket | Real time |
+| Reddit | JSON API | Every 2 minutes |
+| Wellfound | HTML scraping | Every 2 minutes |
+| Upwork | RSS feeds | Every 2 minutes |
+| Freelancer | Public API | Every 2 minutes |
 
 ## Tech Stack
 
 - Python 3.13+
-- aiohttp (async HTTP + WebSocket)
-- Groq API (Llama 3.1 8B for proposals)
-- Green API (WhatsApp integration)
+- `aiohttp`
+- Groq Python SDK
+- Telegram Bot API
 - Discord Gateway v10
 
 ## License

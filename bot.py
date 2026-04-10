@@ -1,59 +1,122 @@
 """
-Telegram-controlled Job Bot v2.
-Monitors Discord, Reddit, Wellfound, Upwork, Freelancer.
-Smart job scoring, personalized proposals with portfolio links.
+Telegram-controlled scheduled job bot.
 
-Commands via Telegram:
-  /start reddit / wellfound / discord / upwork / freelancer / all
-  /stop reddit / wellfound / discord / upwork / freelancer / all
-  /scan        — One-time scan all platforms
-  /status      — Show what's running
-  /help        — Show commands
+Core behavior:
+- /start <platform> creates a recurring 15-minute job for the current Telegram chat
+- /stop <platform> cancels that recurring job
+- /scan [platform] runs the same pipeline immediately without scheduling it
 """
 
 import asyncio
 import logging
 import signal
 import uuid
+from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 
-from groq import AsyncGroq
-
+from api_logger import log_api_event
 from config import Config
-from discord_gateway import DiscordGateway
-from prefilter import PreFilter
-from classifier import JobClassifier
-from notifier import TelegramNotifier
 from logger_setup import setup_logging
+from notifier import TelegramNotifier
 from platforms.base import PlatformJob
-from platforms.reddit import fetch_reddit_jobs
-from platforms.wellfound import fetch_wellfound_jobs
-from platforms.upwork import fetch_upwork_jobs
-from platforms.freelancer_api import fetch_freelancer_jobs
-from profiles import get_profile, set_profile_field, format_profile, find_user_by_name, list_all_profiles
+from profiles import format_profile, get_profile, list_all_profiles, set_profile_field
+from schedule_store import ScheduleStore
 
 logger = logging.getLogger("bot")
 
-POLL_INTERVAL = 120  # 2 minutes
+SUPPORTED_PLATFORMS = ("discord", "reddit", "wellfound", "upwork", "freelancer")
+MAX_JOBS_PER_RUN = 10
 
-# Skills for scoring (weighted)
+HELP_TEXT = """<b>Job Bot</b>
+
+<b>Scheduling:</b>
+  /start reddit - Schedule Reddit updates every 15 minutes
+  /start discord - Schedule Discord history scans every 15 minutes
+  /start all - Schedule all supported platforms
+  /stop reddit - Stop a scheduled platform
+  /stop all - Stop all scheduled platforms for this chat
+  /status - Show active schedules and last run info
+
+<b>Manual Runs:</b>
+  /scan - Run all subscribed platforms once right now
+  /scan upwork - Run one platform once right now
+
+<b>Your Profile:</b>
+  /profile - View your profile
+  /set name Your Name
+  /set github https://github.com/you
+  /set portfolio https://yoursite.com
+  /set rate $20-30/hr
+  /set skills React, Node, Python
+
+<b>Other:</b>
+  /users - List registered users
+  /help - Show this message"""
+
+
 SKILL_WEIGHTS = {
-    "react": 10, "next.js": 10, "nextjs": 10, "node": 8, "node.js": 8,
-    "python": 9, "javascript": 8, "typescript": 9, "vue": 7, "angular": 5,
-    "django": 7, "flask": 7, "express": 7, "full stack": 10, "fullstack": 10,
-    "full-stack": 10, "frontend": 8, "backend": 8, "web dev": 8,
-    "automation": 9, "scraping": 9, "web scraping": 9, "bot": 9,
-    "api": 7, "rest": 6, "graphql": 7, "websocket": 7,
-    "postgres": 6, "mongodb": 6, "redis": 5, "firebase": 5,
-    "docker": 6, "aws": 6, "devops": 6, "ci/cd": 5,
-    "tailwind": 6, "saas": 8, "landing page": 7, "dashboard": 7,
-    "website": 7, "web app": 8, "webapp": 8, "wordpress": 4,
-    "shopify": 4, "laravel": 5, "php": 4, "mern": 9,
-    "payment": 6, "stripe": 6, "vercel": 5,
+    "react": 10,
+    "next.js": 10,
+    "nextjs": 10,
+    "node": 8,
+    "node.js": 8,
+    "python": 9,
+    "javascript": 8,
+    "typescript": 9,
+    "vue": 7,
+    "angular": 5,
+    "django": 7,
+    "flask": 7,
+    "express": 7,
+    "full stack": 10,
+    "fullstack": 10,
+    "full-stack": 10,
+    "frontend": 8,
+    "backend": 8,
+    "web dev": 8,
+    "automation": 9,
+    "scraping": 9,
+    "web scraping": 9,
+    "bot": 9,
+    "api": 7,
+    "rest": 6,
+    "graphql": 7,
+    "websocket": 7,
+    "postgres": 6,
+    "mongodb": 6,
+    "redis": 5,
+    "firebase": 5,
+    "docker": 6,
+    "aws": 6,
+    "devops": 6,
+    "ci/cd": 5,
+    "tailwind": 6,
+    "saas": 8,
+    "landing page": 7,
+    "dashboard": 7,
+    "website": 7,
+    "web app": 8,
+    "webapp": 8,
+    "wordpress": 4,
+    "shopify": 4,
+    "laravel": 5,
+    "php": 4,
+    "mern": 9,
+    "payment": 6,
+    "stripe": 6,
+    "vercel": 5,
+}
+
+PLATFORM_TAGS = {
+    "discord": ("DC", "🔵"),
+    "reddit": ("RD", "🟠"),
+    "wellfound": ("WF", "🟣"),
+    "upwork": ("UP", "🟢"),
+    "freelancer": ("FL", "🟤"),
 }
 
 PROPOSAL_PROMPT = """Write a short proposal to apply for this freelance dev job.
-You are {name} — full stack dev.
+You are {name} - full stack dev.
 
 Your profile:
 - Stack: React, Next.js, Node.js, Python, Django, Flask, TypeScript, automation, bots, web scraping, DevOps
@@ -63,16 +126,14 @@ Your profile:
 
 Rules:
 - 70-120 words MAX
-- Open by referencing something SPECIFIC about their project (not generic)
+- Open by referencing something SPECIFIC about their project
 - Drop 1-2 concrete skills that match what they need
-- Mention a similar project you've built or can reference from your portfolio
-- Show availability ("can start today", "got bandwidth this week")
+- Mention a similar project you have built or can reference
+- Show availability
 - End with: "Here's my work: {portfolio}" or "Check my GitHub: {github}"
-- Sound like a real human on {platform} — casual but professional
-- NO emojis, NO "Dear", NO bullet lists, NO "Best regards"
-- Don't quote your rate unless the budget is clearly stated
+- Sound like a real human on {platform}
+- NO emojis, NO bullet lists, NO "Best regards"
 - Be confident, not desperate
-- Vary the opening — never start the same way twice
 
 Job:
 Title: {title}
@@ -82,36 +143,8 @@ Budget: {budget}
 
 Write ONLY the message, nothing else."""
 
-HELP_TEXT = """<b>Job Bot v2</b>
-
-<b>Platforms:</b>
-  /start reddit — 12 dev subreddits
-  /start wellfound — Startup jobs
-  /start discord — 9 freelance servers
-  /start upwork — Upwork RSS feeds
-  /start freelancer — Freelancer.com API
-  /start all — Everything
-
-<b>Controls:</b>
-  /stop [platform] or /stop all
-  /scan — Scan &amp; send jobs
-  /scan Manas — Scan for specific user
-  /alert Dev — Route live alerts to Dev only
-  /alert all — Route live alerts to everyone
-  /status — What's running
-  /users — List registered users
-
-<b>Your Profile:</b>
-  /profile — View your profile
-  /set name Your Name
-  /set github https://github.com/you
-  /set portfolio https://yoursite.com
-  /set rate $20-30/hr
-  /set skills React, Node, Python"""
-
 
 def score_job(job: PlatformJob) -> int:
-    """Score a job based on skill match. Higher = better fit."""
     text = (job.title + " " + job.description + " " + " ".join(job.skills)).lower()
     score = 0
     for skill, weight in SKILL_WEIGHTS.items():
@@ -121,192 +154,190 @@ def score_job(job: PlatformJob) -> int:
 
 
 def priority_label(score: int) -> tuple[str, str]:
-    """Returns (label, emoji) for a score."""
     if score >= 30:
         return "PERFECT FIT", "🔥🔥🔥"
-    elif score >= 20:
+    if score >= 20:
         return "Great Match", "🔥🔥"
-    elif score >= 10:
+    if score >= 10:
         return "Good Match", "🔥"
     return "Match", "📋"
 
 
-PLATFORM_TAGS = {
-    "reddit": ("RD", "🟠"),
-    "wellfound": ("WF", "🟣"),
-    "upwork": ("UP", "🟢"),
-    "freelancer": ("FL", "🔵"),
-}
+def _default_profile() -> dict:
+    return {
+        "name": "Manas",
+        "portfolio": "",
+        "github": "",
+        "rate": "negotiable",
+        "skills": "",
+    }
 
 
 class JobBot:
-    def __init__(self):
-        self.config = Config.from_env()
-        self.notifier = TelegramNotifier(self.config)
-        self.groq = AsyncGroq(api_key=self.config.groq_api_key)
+    def __init__(
+        self,
+        *,
+        config: Config | None = None,
+        notifier: TelegramNotifier | None = None,
+        schedule_store: ScheduleStore | None = None,
+        fetchers: dict[str, object] | None = None,
+        proposal_generator=None,
+        interval_seconds: int | None = None,
+    ):
+        self.config = config or Config.from_env()
+        self.notifier = notifier or TelegramNotifier(self.config)
+        self.schedule_store = schedule_store or ScheduleStore(path=self.config.schedule_db_path)
+        self.interval_seconds = interval_seconds or self.config.schedule_interval_seconds
+        self.fetchers = fetchers or self._build_default_fetchers()
+        self.proposal_generator = proposal_generator or self._generate_proposal_with_groq
         self.shutdown = asyncio.Event()
+        self.scheduled_jobs: dict[tuple[int, str], asyncio.Task] = {}
+        self._groq_client = None
 
-        self.active_platforms: dict[str, bool] = {
-            "reddit": False,
-            "wellfound": False,
-            "discord": False,
-            "upwork": False,
-            "freelancer": False,
+    def _build_default_fetchers(self) -> dict[str, object]:
+        return {
+            "discord": self._fetch_discord_jobs,
+            "reddit": self._fetch_reddit_jobs,
+            "wellfound": self._fetch_wellfound_jobs,
+            "upwork": self._fetch_upwork_jobs,
+            "freelancer": self._fetch_freelancer_jobs,
         }
 
-        self.platform_tasks: dict[str, asyncio.Task | None] = {
-            k: None for k in self.active_platforms
-        }
+    async def _fetch_discord_jobs(self, seen_ids: set[str]) -> list[PlatformJob]:
+        from platforms.discord_history import fetch_discord_jobs
 
-        self.seen_ids: dict[str, set[str]] = {
-            "reddit": set(),
-            "wellfound": set(),
-            "upwork": set(),
-            "freelancer": set(),
-        }
+        return await fetch_discord_jobs(self.config, seen_ids)
 
-        # Alert targeting: None = group chat, or a specific user's chat_id
-        self.alert_target: int | None = None
+    async def _fetch_reddit_jobs(self, seen_ids: set[str]) -> list[PlatformJob]:
+        from platforms.reddit import fetch_reddit_jobs
+
+        return await fetch_reddit_jobs(seen_ids)
+
+    async def _fetch_wellfound_jobs(self, seen_ids: set[str]) -> list[PlatformJob]:
+        from platforms.wellfound import fetch_wellfound_jobs
+
+        return await fetch_wellfound_jobs(seen_ids)
+
+    async def _fetch_upwork_jobs(self, seen_ids: set[str]) -> list[PlatformJob]:
+        from platforms.upwork import fetch_upwork_jobs
+
+        return await fetch_upwork_jobs(seen_ids)
+
+    async def _fetch_freelancer_jobs(self, seen_ids: set[str]) -> list[PlatformJob]:
+        from platforms.freelancer_api import fetch_freelancer_jobs
+
+        return await fetch_freelancer_jobs(seen_ids)
 
     async def run(self):
         setup_logging(self.config.log_level)
-        logger.info("Job Bot v2 starting...")
+        logger.info("Job Bot starting with scheduled platform runners")
 
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self.shutdown.set)
 
-        # Register commands with Telegram
         await self.notifier.setup_commands()
-        await self.notifier.send_text(HELP_TEXT)
+        await self.restore_schedules()
 
         while not self.shutdown.is_set():
             try:
                 updates = await self.notifier.get_updates(timeout=15)
-
-                if not updates:
-                    continue
-
                 for update in updates:
-                    # Handle button presses
                     if "callback_query" in update:
                         await self.handle_callback(update["callback_query"])
                         continue
 
-                    # Handle text commands
                     message = update.get("message", {})
                     text = message.get("text", "").strip()
                     user = message.get("from", {})
                     user_id = str(user.get("id", ""))
                     chat_id = message.get("chat", {}).get("id")
-
-                    if not text:
-                        continue
-
-                    await self.handle_command(text, user_id, chat_id)
-
-            except Exception as e:
-                logger.error(f"Bot error: {e}")
+                    if text and chat_id is not None:
+                        await self.handle_command(text, user_id, int(chat_id))
+            except Exception as exc:
+                logger.error(f"Bot loop error: {exc}", exc_info=True)
                 await asyncio.sleep(3)
 
-        await self.stop_all()
+        await self.shutdown_schedules()
         await self.notifier.close()
-        logger.info("Job Bot stopped.")
+        self.schedule_store.close()
+        logger.info("Job Bot stopped")
+
+    async def restore_schedules(self) -> None:
+        for chat_id, platform in self.schedule_store.list_subscriptions():
+            self._ensure_schedule(chat_id, platform)
+        logger.info(f"Restored {len(self.scheduled_jobs)} scheduled platform jobs")
+
+    async def shutdown_schedules(self) -> None:
+        tasks = list(self.scheduled_jobs.values())
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self.scheduled_jobs.clear()
 
     async def handle_callback(self, callback: dict):
-        """Handle inline keyboard button presses."""
-        cb_id = callback.get("id", "")
+        callback_id = callback.get("id", "")
         data = callback.get("data", "")
         chat_id = callback.get("message", {}).get("chat", {}).get("id")
 
         if data.startswith("copy_"):
-            job_id = data[5:]
-            proposal = self.notifier.pending_proposals.get(job_id)
+            proposal = self.notifier.pending_proposals.get(data[5:])
             if proposal:
-                # Send proposal as plain text (no formatting) so user can copy it easily
                 await self.notifier.send_text(proposal, chat_id, parse_mode="")
-                await self.notifier.answer_callback(cb_id, "Proposal sent below — tap to copy!")
+                await self.notifier.answer_callback(callback_id, "Proposal sent below.")
             else:
-                await self.notifier.answer_callback(cb_id, "Proposal expired or not found.")
-        else:
-            await self.notifier.answer_callback(cb_id)
+                await self.notifier.answer_callback(callback_id, "Proposal expired or not found.")
+            return
+
+        await self.notifier.answer_callback(callback_id)
 
     async def handle_command(self, text: str, user_id: str, chat_id: int):
-        cmd = text.lower().strip()
-        # Strip bot mention from group commands (e.g. /start@Mannnnnnaaasss_Bot)
-        if "@" in cmd:
-            cmd = cmd.split("@")[0]
-        logger.info(f"Command from {user_id}: {cmd}")
+        command = text.strip()
+        normalized = command.lower()
+        if "@" in normalized:
+            normalized = normalized.split("@")[0]
+            command = command.split("@")[0]
 
-        if cmd == "/help" or cmd == "/start":
+        logger.info(f"Command from {user_id} in {chat_id}: {normalized}")
+
+        if normalized in {"/help", "/start"}:
             await self.notifier.send_text(HELP_TEXT, chat_id)
-        elif cmd == "/status":
+        elif normalized == "/status":
             await self.send_status(chat_id)
-        elif cmd == "/users":
+        elif normalized == "/users":
             await self.notifier.send_text(list_all_profiles(), chat_id)
-        elif cmd == "/profile":
+        elif normalized == "/profile":
             await self.notifier.send_text(format_profile(user_id), chat_id)
-        elif cmd.startswith("/set "):
-            await self.handle_set(cmd[5:].strip(), user_id, text[5:].strip(), chat_id)
-        elif cmd.startswith("/scan"):
-            name = cmd[5:].strip() if len(cmd) > 5 else ""
-            await self.handle_scan(name, user_id, chat_id)
-        elif cmd.startswith("/alert "):
-            await self.handle_alert(cmd[7:].strip(), chat_id)
-        elif cmd.startswith("/start "):
-            await self.start_platform(cmd[7:].strip(), chat_id)
-        elif cmd.startswith("/stop "):
-            await self.stop_platform(cmd[6:].strip(), chat_id)
-
-    async def handle_alert(self, name: str, chat_id: int):
-        if name == "all":
-            self.alert_target = None
-            await self.notifier.send_text("🔔 Live alerts now going to <b>everyone</b>.", chat_id)
-            return
-
-        target_id = find_user_by_name(name)
-        if not target_id:
-            await self.notifier.send_text(
-                f"User <b>{html_escape(name)}</b> not found.\n\n"
-                f"Make sure they've set their name:\n/set name {html_escape(name)}\n\n"
-                f"Type /users to see registered users.",
-                chat_id,
-            )
-            return
-
-        self.alert_target = int(target_id)
-        await self.notifier.send_text(
-            f"🔔 Live alerts now going to <b>{html_escape(name)}</b> only.\n"
-            f"Type /alert all to send to everyone.",
-            chat_id,
-        )
-
-    async def handle_scan(self, name: str, user_id: str, chat_id: int):
-        target_chat = None
-        if name:
-            target_id = find_user_by_name(name)
-            if not target_id:
-                await self.notifier.send_text(
-                    f"User <b>{html_escape(name)}</b> not found. Type /users to see registered users.",
-                    chat_id,
-                )
-                return
-            target_chat = int(target_id)
-        await self.run_scan(target_chat or chat_id, user_id)
+        elif normalized.startswith("/set "):
+            await self.handle_set(normalized[5:].strip(), user_id, command[5:].strip(), chat_id)
+        elif normalized.startswith("/scan"):
+            platform = normalized[5:].strip() if len(normalized) > 5 else ""
+            await self.handle_scan(chat_id, user_id, platform)
+        elif normalized.startswith("/start "):
+            platform = normalized[7:].strip()
+            await self.handle_start(chat_id, platform)
+        elif normalized.startswith("/stop "):
+            platform = normalized[6:].strip()
+            await self.handle_stop(chat_id, platform)
+        else:
+            await self.notifier.send_text(HELP_TEXT, chat_id)
 
     async def handle_set(self, args: str, user_id: str, original_args: str, chat_id: int):
         parts = args.split(" ", 1)
         if len(parts) < 2:
             await self.notifier.send_text(
-                "Usage: /set name Your Name\n"
-                "Fields: name, github, portfolio, rate, skills",
+                "Usage: /set name Your Name\nFields: name, github, portfolio, rate, skills",
                 chat_id,
             )
             return
 
         field = parts[0].lower()
-        orig_parts = original_args.split(" ", 1)
-        value = orig_parts[1] if len(orig_parts) > 1 else parts[1]
+        original_parts = original_args.split(" ", 1)
+        value = original_parts[1] if len(original_parts) > 1 else parts[1]
 
         valid_fields = ["name", "github", "portfolio", "rate", "skills"]
         if field not in valid_fields:
@@ -317,208 +348,323 @@ class JobBot:
             return
 
         set_profile_field(user_id, field, value)
-        await self.notifier.send_text(f"✅ <b>{html_escape(field)}</b> set to: {html_escape(value)}", chat_id)
-        logger.info(f"Profile updated for {user_id}: {field} = {value}")
-
-    async def send_status(self, chat_id: int):
-        lines = ["<b>Bot Status</b>\n"]
-        for name, active in self.active_platforms.items():
-            icon = "🟢" if active else "⚪"
-            status = "Running" if active else "Stopped"
-            lines.append(f"{icon} <b>{name.title()}</b> — {status}")
-        await self.notifier.send_text("\n".join(lines), chat_id)
-
-    async def start_platform(self, name: str, chat_id: int):
-        if name == "all":
-            for p in self.active_platforms:
-                await self.start_platform(p, chat_id)
-            return
-
-        if name not in self.active_platforms:
-            await self.notifier.send_text(
-                f"Unknown: <i>{html_escape(name)}</i>\n"
-                f"Available: reddit, wellfound, discord, upwork, freelancer",
-                chat_id,
-            )
-            return
-
-        if self.active_platforms[name]:
-            await self.notifier.send_text(f"<b>{name.title()}</b> already running.", chat_id)
-            return
-
-        self.active_platforms[name] = True
-        fetcher_map = {
-            "reddit": lambda: self.poll_loop("reddit", fetch_reddit_jobs),
-            "wellfound": lambda: self.poll_loop("wellfound", fetch_wellfound_jobs),
-            "upwork": lambda: self.poll_loop("upwork", fetch_upwork_jobs),
-            "freelancer": lambda: self.poll_loop("freelancer", fetch_freelancer_jobs),
-            "discord": lambda: self.run_discord(),
-        }
-        self.platform_tasks[name] = asyncio.create_task(fetcher_map[name]())
-        await self.notifier.send_text(f"🟢 <b>{name.title()}</b> started!", chat_id)
-
-    async def stop_platform(self, name: str, chat_id: int):
-        if name == "all":
-            await self.stop_all()
-            await self.notifier.send_text("⚪ All platforms stopped.", chat_id)
-            return
-
-        if name not in self.active_platforms:
-            await self.notifier.send_text(f"Unknown: <i>{html_escape(name)}</i>", chat_id)
-            return
-
-        self.active_platforms[name] = False
-        task = self.platform_tasks.get(name)
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self.platform_tasks[name] = None
-        await self.notifier.send_text(f"⚪ <b>{name.title()}</b> stopped.", chat_id)
-
-    async def stop_all(self):
-        for name in list(self.active_platforms):
-            self.active_platforms[name] = False
-            task = self.platform_tasks.get(name)
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            self.platform_tasks[name] = None
-
-    # --- Platform loops ---
-
-    async def poll_loop(self, name: str, fetch_fn):
-        logger.info(f"{name} polling started")
-        while self.active_platforms.get(name):
-            try:
-                jobs = await fetch_fn(self.seen_ids.get(name, set()))
-                if jobs:
-                    scored = [(score_job(j), j) for j in jobs]
-                    scored.sort(key=lambda x: x[0], reverse=True)
-                    target = self.alert_target
-                    await self.send_jobs([(s, j) for s, j in scored[:10]], target)
-            except Exception as e:
-                logger.error(f"{name} poll error: {e}")
-            await asyncio.sleep(POLL_INTERVAL)
-
-    async def run_discord(self):
-        logger.info("Discord monitor started")
-        prefilter = PreFilter(self.config)
-        classifier = JobClassifier(self.config)
-        gateway = DiscordGateway(self.config.discord_token, self.config.server_ids)
-
-        while self.active_platforms.get("discord"):
-            try:
-                await gateway.connect()
-                async for message in gateway.listen():
-                    if not self.active_platforms.get("discord"):
-                        break
-                    if not prefilter.should_classify(message):
-                        continue
-                    job = await classifier.classify(message)
-                    if job:
-                        await self.notifier.notify(job)
-            except ConnectionError as e:
-                logger.warning(f"Discord lost: {e}")
-                await gateway.close()
-                await asyncio.sleep(5)
-            except Exception as e:
-                logger.error(f"Discord error: {e}")
-                await gateway.close()
-                await asyncio.sleep(5)
-        await gateway.close()
-
-    async def run_scan(self, chat_id: int, user_id: str = ""):
-        await self.notifier.send_text("⏳ <b>Scanning all platforms...</b>", chat_id)
-
-        all_jobs = []
-        for name, fetch_fn in [
-            ("Reddit", fetch_reddit_jobs),
-            ("Wellfound", fetch_wellfound_jobs),
-            ("Upwork", fetch_upwork_jobs),
-            ("Freelancer", fetch_freelancer_jobs),
-        ]:
-            try:
-                jobs = await fetch_fn(set())
-                all_jobs.extend(jobs)
-                logger.info(f"Scan {name}: {len(jobs)} jobs")
-            except Exception as e:
-                logger.error(f"Scan {name} error: {e}")
-
-        if not all_jobs:
-            await self.notifier.send_text("✅ <b>Scan complete</b> — no dev jobs found.", chat_id)
-            return
-
-        scored = [(score_job(j), j) for j in all_jobs]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:15]
-
         await self.notifier.send_text(
-            f"✅ <b>Found {len(all_jobs)} jobs!</b> Sending top {len(top)} by skill match...",
+            f"Updated <b>{html_escape(field)}</b> to: {html_escape(value)}",
             chat_id,
         )
 
-        await self.send_jobs(top, chat_id, user_id)
+    async def handle_start(self, chat_id: int, platform_arg: str):
+        platforms = self._resolve_platforms(platform_arg)
+        if platforms is None:
+            await self.notifier.send_text(self._platform_usage_text("start"), chat_id)
+            return
 
-    # --- Send jobs with proposals ---
+        newly_started = []
+        already_running = []
+        for platform in platforms:
+            if self.schedule_store.is_subscribed(chat_id, platform):
+                already_running.append(platform)
+                continue
+            self.schedule_store.add_subscription(chat_id, platform)
+            self._ensure_schedule(chat_id, platform)
+            newly_started.append(platform)
 
-    async def send_jobs(self, scored_jobs: list[tuple[int, PlatformJob]], chat_id: int | None = None, user_id: str = ""):
+        lines = []
+        if newly_started:
+            joined = ", ".join(platform.title() for platform in newly_started)
+            lines.append(f"Scheduled every 15 minutes: <b>{html_escape(joined)}</b>.")
+            lines.append("The first run starts immediately.")
+        if already_running:
+            joined = ", ".join(platform.title() for platform in already_running)
+            lines.append(f"Already scheduled: <b>{html_escape(joined)}</b>.")
+
+        await self.notifier.send_text("\n".join(lines), chat_id)
+
+    async def handle_stop(self, chat_id: int, platform_arg: str):
+        if platform_arg == "all":
+            current = self.schedule_store.get_subscriptions(chat_id)
+            self.schedule_store.remove_all_subscriptions(chat_id)
+            for platform in current:
+                await self._cancel_schedule(chat_id, platform)
+            await self.notifier.send_text("Stopped all scheduled platform jobs for this chat.", chat_id)
+            return
+
+        platforms = self._resolve_platforms(platform_arg)
+        if platforms is None or len(platforms) != 1:
+            await self.notifier.send_text(self._platform_usage_text("stop"), chat_id)
+            return
+
+        platform = platforms[0]
+        if not self.schedule_store.is_subscribed(chat_id, platform):
+            await self.notifier.send_text(f"{platform.title()} is not currently scheduled.", chat_id)
+            return
+
+        self.schedule_store.remove_subscription(chat_id, platform)
+        await self._cancel_schedule(chat_id, platform)
+        await self.notifier.send_text(f"Stopped scheduled updates for <b>{platform.title()}</b>.", chat_id)
+
+    async def handle_scan(self, chat_id: int, user_id: str, platform_arg: str):
+        if platform_arg:
+            platforms = self._resolve_platforms(platform_arg)
+            if platforms is None:
+                await self.notifier.send_text(self._platform_usage_text("scan"), chat_id)
+                return
+        else:
+            platforms = self.schedule_store.get_subscriptions(chat_id) or list(SUPPORTED_PLATFORMS)
+
+        await self.notifier.send_text(
+            f"Running an immediate scan for: <b>{html_escape(', '.join(p.title() for p in platforms))}</b>.",
+            chat_id,
+        )
+        for platform in platforms:
+            await self.run_platform_cycle(chat_id, user_id, platform, scheduled=False)
+
+    async def send_status(self, chat_id: int):
+        subscriptions = self.schedule_store.get_subscriptions(chat_id)
+        if not subscriptions:
+            await self.notifier.send_text("No active schedules for this chat. Use /start <platform>.", chat_id)
+            return
+
+        lines = ["<b>Scheduled Platforms</b>"]
+        for platform in subscriptions:
+            state = self.schedule_store.get_run_state(chat_id, platform)
+            last_run = state.get("last_run_at", "never")
+            result_count = state.get("last_result_count", 0)
+            error = state.get("last_error")
+
+            if last_run != "never":
+                next_run = self._compute_next_run(last_run)
+                lines.append(
+                    f"\n<b>{platform.title()}</b>\n"
+                    f"Last run: {html_escape(last_run)}\n"
+                    f"Last result count: {result_count}\n"
+                    f"Next run: {html_escape(next_run)}"
+                )
+            else:
+                lines.append(f"\n<b>{platform.title()}</b>\nLast run: never\nNext run: starting soon")
+
+            if error:
+                lines.append(f"Last error: {html_escape(error)}")
+
+        await self.notifier.send_text("\n".join(lines), chat_id)
+
+    def _compute_next_run(self, last_run_at: str) -> str:
+        try:
+            last_run = datetime.fromisoformat(last_run_at)
+        except ValueError:
+            return "unknown"
+        next_run = last_run + timedelta(seconds=self.interval_seconds)
+        return next_run.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    def _resolve_platforms(self, platform_arg: str) -> list[str] | None:
+        platform = platform_arg.strip().lower()
+        if not platform:
+            return None
+        if platform == "all":
+            return list(SUPPORTED_PLATFORMS)
+        if platform not in SUPPORTED_PLATFORMS:
+            return None
+        return [platform]
+
+    def _platform_usage_text(self, verb: str) -> str:
+        return (
+            f"Usage: /{verb} <platform>\n"
+            f"Available: {', '.join(SUPPORTED_PLATFORMS)}, all"
+        )
+
+    def _ensure_schedule(self, chat_id: int, platform: str) -> None:
+        key = (chat_id, platform)
+        task = self.scheduled_jobs.get(key)
+        if task and not task.done():
+            return
+        self.scheduled_jobs[key] = asyncio.create_task(self._schedule_loop(chat_id, platform))
+
+    async def _cancel_schedule(self, chat_id: int, platform: str) -> None:
+        key = (chat_id, platform)
+        task = self.scheduled_jobs.get(key)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self.scheduled_jobs.pop(key, None)
+
+    async def _schedule_loop(self, chat_id: int, platform: str) -> None:
+        key = (chat_id, platform)
+        logger.info(f"Starting schedule loop for chat={chat_id} platform={platform}")
+        try:
+            while not self.shutdown.is_set() and self.schedule_store.is_subscribed(chat_id, platform):
+                await self.run_platform_cycle(chat_id, str(chat_id), platform, scheduled=True)
+                try:
+                    await asyncio.wait_for(self.shutdown.wait(), timeout=self.interval_seconds)
+                except asyncio.TimeoutError:
+                    continue
+        except asyncio.CancelledError:
+            logger.info(f"Cancelled schedule loop for chat={chat_id} platform={platform}")
+            raise
+        finally:
+            current = self.scheduled_jobs.get(key)
+            if current is asyncio.current_task():
+                self.scheduled_jobs.pop(key, None)
+
+    async def run_platform_cycle(self, chat_id: int, user_id: str, platform: str, *, scheduled: bool) -> None:
+        started_at = datetime.now(timezone.utc)
+        started_at_iso = started_at.isoformat()
+        claimed = self.schedule_store.claim_run(chat_id, platform, started_at=started_at_iso)
+        if not claimed:
+            logger.info(f"Skipping overlapping run for chat={chat_id} platform={platform}")
+            log_api_event(
+                "scheduler",
+                "platform_run_skipped",
+                "already_running",
+                chat_id=chat_id,
+                platform=platform,
+                scheduled=scheduled,
+            )
+            if not scheduled:
+                await self.notifier.send_text(
+                    f"<b>{platform.title()}</b> already has a run in progress. Try again in a moment.",
+                    chat_id,
+                )
+            return
+
+        seen_ids = self.schedule_store.get_seen_ids(chat_id, platform)
+        fetcher = self.fetchers[platform]
+
+        try:
+            jobs = await fetcher(seen_ids)
+            self.schedule_store.set_seen_ids(chat_id, platform, seen_ids)
+            scored_jobs = sorted(((score_job(job), job) for job in jobs), key=lambda item: item[0], reverse=True)
+            limited_jobs = scored_jobs[:MAX_JOBS_PER_RUN]
+
+            await self._send_run_results(chat_id, user_id, platform, limited_jobs, len(scored_jobs), scheduled=scheduled)
+            self.schedule_store.set_run_state(
+                chat_id,
+                platform,
+                last_run_at=started_at_iso,
+                last_result_count=len(scored_jobs),
+                last_error=None,
+            )
+            log_api_event(
+                "scheduler",
+                "platform_run",
+                "success",
+                payload={"jobs_found": len(scored_jobs)},
+                chat_id=chat_id,
+                platform=platform,
+                scheduled=scheduled,
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            logger.error(f"Scheduled run failed for chat={chat_id} platform={platform}: {exc}", exc_info=True)
+            self.schedule_store.set_run_state(
+                chat_id,
+                platform,
+                last_run_at=started_at_iso,
+                last_result_count=0,
+                last_error=error_text,
+            )
+            log_api_event(
+                "scheduler",
+                "platform_run",
+                "exception",
+                chat_id=chat_id,
+                platform=platform,
+                scheduled=scheduled,
+                error=error_text,
+            )
+            if not scheduled:
+                await self.notifier.send_text(
+                    f"Scan failed for <b>{platform.title()}</b>: {html_escape(error_text)}",
+                    chat_id,
+                )
+        finally:
+            self.schedule_store.release_run(chat_id, platform)
+
+    async def _send_run_results(
+        self,
+        chat_id: int,
+        user_id: str,
+        platform: str,
+        scored_jobs: list[tuple[int, PlatformJob]],
+        total_count: int,
+        *,
+        scheduled: bool,
+    ) -> None:
+        if not scored_jobs:
+            if not scheduled:
+                await self.notifier.send_text(
+                    f"No new jobs found for <b>{platform.title()}</b>.",
+                    chat_id,
+                )
+            return
+
+        run_type = "Scheduled update" if scheduled else "Manual scan"
+        await self.notifier.send_text(
+            f"<b>{run_type}: {platform.title()}</b>\n"
+            f"New jobs found: {total_count}\n"
+            f"Sending top {len(scored_jobs)} matches.",
+            chat_id,
+        )
+
         for score, job in scored_jobs:
             await self.send_platform_job(job, score, chat_id, user_id)
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.2)
 
-    async def send_platform_job(self, job: PlatformJob, score: int, chat_id: int | None = None, user_id: str = ""):
+    async def send_platform_job(self, job: PlatformJob, score: int, chat_id: int, user_id: str):
         tag, emoji = PLATFORM_TAGS.get(job.platform, ("??", "📋"))
         label, match_emoji = priority_label(score)
         skills_str = ", ".join(job.skills[:5]) if job.skills else "See description"
 
-        title = html_escape(job.title)
-        desc = html_escape(job.description[:300])
-
         lines = [
             f"{emoji} <b>[{tag}] {match_emoji} {label}</b>",
             "",
-            f"<b>Title:</b>  {title}",
+            f"<b>Title:</b> {html_escape(job.title)}",
         ]
         if job.posted_by:
-            lines.append(f"<b>By:</b>  {html_escape(job.posted_by)}")
+            lines.append(f"<b>By:</b> {html_escape(job.posted_by)}")
         if job.budget:
-            lines.append(f"<b>Budget:</b>  {html_escape(job.budget)}")
+            lines.append(f"<b>Budget:</b> {html_escape(job.budget)}")
         if job.job_type:
-            lines.append(f"<b>Type:</b>  {html_escape(job.job_type)}")
+            lines.append(f"<b>Type:</b> {html_escape(job.job_type)}")
         if job.skills:
-            lines.append(f"<b>Skills:</b>  {html_escape(skills_str)}")
-        lines.extend([
-            "",
-            desc,
-        ])
+            lines.append(f"<b>Skills:</b> {html_escape(skills_str)}")
+        if job.location:
+            lines.append(f"<b>Location:</b> {html_escape(job.location)}")
+        lines.extend(["", html_escape(job.description[:350])])
 
+        proposal = await self.generate_proposal(job, get_profile(user_id))
         job_card = "\n".join(lines)
-
-        # Generate proposal
-        profile = get_profile(user_id) if user_id else get_profile("")
-        proposal = await self.generate_proposal(job, profile)
-
         job_id = uuid.uuid4().hex[:6]
-        target = chat_id or self.notifier._chat_id
 
         if proposal:
             await self.notifier.send_job_with_proposal(
-                job_card, proposal,
-                job_id=job_id, url=job.url, chat_id=target,
+                job_card,
+                proposal,
+                job_id=job_id,
+                url=job.url,
+                chat_id=chat_id,
             )
-        else:
-            buttons = [[{"text": "Open Link", "url": job.url}]]
-            await self.notifier.send_with_buttons(job_card, buttons, target)
+            return
+
+        buttons = [[{"text": "Open Link", "url": job.url}]]
+        await self.notifier.send_with_buttons(job_card, buttons, chat_id)
 
     async def generate_proposal(self, job: PlatformJob, profile: dict | None = None) -> str | None:
-        if not profile or not profile.get("name"):
-            profile = {"name": "Manas", "portfolio": "", "github": "", "rate": "negotiable", "skills": ""}
+        selected_profile = profile if profile and profile.get("name") else _default_profile()
+        return await self.proposal_generator(job, selected_profile)
+
+    async def _generate_proposal_with_groq(self, job: PlatformJob, profile: dict) -> str | None:
+        if self._groq_client is None:
+            try:
+                from groq import AsyncGroq
+            except ModuleNotFoundError:
+                log_api_event("groq", "proposal", "missing_dependency", platform=job.platform)
+                logger.warning("Groq SDK is not installed; skipping proposal generation")
+                return None
+            self._groq_client = AsyncGroq(api_key=self.config.groq_api_key)
 
         skills_str = ", ".join(job.skills) if job.skills else "Not specified"
         prompt = PROPOSAL_PROMPT.format(
@@ -532,19 +678,28 @@ class JobBot:
             github=profile.get("github", ""),
             rate=profile.get("rate", "negotiable"),
         )
+
         try:
-            resp = await self.groq.chat.completions.create(
-                model="llama-3.1-8b-instant",
+            response = await self._groq_client.chat.completions.create(
+                model=self.config.groq_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.8,
                 max_tokens=250,
             )
-            return resp.choices[0].message.content.strip().strip('"')
-        except Exception as e:
-            logger.error(f"Proposal failed: {e}")
+            content = response.choices[0].message.content.strip().strip('"')
+            log_api_event(
+                "groq",
+                "proposal",
+                "success",
+                payload={"preview": content[:250]},
+                platform=job.platform,
+            )
+            return content
+        except Exception as exc:
+            log_api_event("groq", "proposal", "exception", platform=job.platform, error=str(exc))
+            logger.error(f"Proposal generation failed: {exc}")
             return None
 
 
 if __name__ == "__main__":
-    bot = JobBot()
-    asyncio.run(bot.run())
+    asyncio.run(JobBot().run())

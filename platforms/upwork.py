@@ -6,9 +6,17 @@ import xml.etree.ElementTree as ET
 from html import unescape
 from urllib.parse import quote
 
-import aiohttp
-import certifi
+try:
+    import aiohttp
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    aiohttp = None
 
+try:
+    import certifi
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    certifi = None
+
+from api_logger import log_api_event
 from .base import PlatformJob
 
 logger = logging.getLogger(__name__)
@@ -73,7 +81,9 @@ def parse_rss(xml_text: str) -> list[dict]:
 
 async def fetch_upwork_jobs(seen_ids: set[str]) -> list[PlatformJob]:
     """Fetch latest Upwork jobs across all search queries."""
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    if aiohttp is None:
+        raise RuntimeError("aiohttp is required to fetch Upwork jobs")
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where()) if certifi else ssl.create_default_context()
     conn = aiohttp.TCPConnector(ssl=ssl_ctx)
     new_jobs = []
 
@@ -84,6 +94,7 @@ async def fetch_upwork_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                 async with session.get(url, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
                         xml_text = await resp.text()
+                        log_api_event("upwork", "rss", resp.status, payload=xml_text, query=query)
                         raw_jobs = parse_rss(xml_text)
 
                         for job in raw_jobs:
@@ -106,10 +117,13 @@ async def fetch_upwork_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                                 job_id=job_id,
                             ))
                     elif resp.status == 403:
+                        log_api_event("upwork", "rss", resp.status, query=query)
                         logger.debug(f"Upwork RSS blocked for query: {query}")
                     else:
+                        log_api_event("upwork", "rss", resp.status, query=query)
                         logger.debug(f"Upwork RSS {resp.status} for: {query}")
             except Exception as e:
+                log_api_event("upwork", "rss", "exception", query=query, error=str(e))
                 logger.debug(f"Upwork fetch error for '{query}': {e}")
 
     logger.info(f"Upwork: {len(new_jobs)} new jobs")

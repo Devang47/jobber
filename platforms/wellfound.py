@@ -1,17 +1,24 @@
 """Wellfound (AngelList) job monitor via GraphQL API."""
 
+import asyncio
+import json
 import logging
 import ssl
-import json
 
-import aiohttp
-import certifi
+try:
+    import aiohttp
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    aiohttp = None
 
+try:
+    import certifi
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    certifi = None
+
+from api_logger import log_api_event
 from .base import PlatformJob
 
 logger = logging.getLogger(__name__)
-
-GRAPHQL_URL = "https://wellfound.com/graphql"
 
 # Roles to search for
 ROLE_SLUGS = [
@@ -28,49 +35,14 @@ ROLE_SLUGS = [
     "api-developer",
 ]
 
-# GraphQL query to fetch jobs by role (reverse-engineered from Wellfound)
-JOBS_QUERY = """
-query JobSearchResults($query: String!, $page: Int) {
-  talent {
-    jobSearchResults(query: $query, page: $page) {
-      startupSearchResults {
-        id
-        name
-        slug
-        logoUrl
-        highConcept
-        companySize
-      }
-      jobListingSearchResults {
-        id
-        title
-        slug
-        description
-        remote
-        primaryRoleTitle
-        liveStartAt
-        compensation
-        jobType
-        startup {
-          id
-          name
-          slug
-          highConcept
-          companySize
-        }
-      }
-    }
-  }
-}
-"""
-
-# Alternative: scrape the job listing pages directly
 ROLE_URL = "https://wellfound.com/role/r/{slug}"
 
 
 async def fetch_wellfound_jobs(seen_ids: set[str]) -> list[PlatformJob]:
     """Fetch latest remote dev jobs from Wellfound."""
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    if aiohttp is None:
+        raise RuntimeError("aiohttp is required to fetch Wellfound jobs")
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where()) if certifi else ssl.create_default_context()
     conn = aiohttp.TCPConnector(ssl=ssl_ctx)
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -87,11 +59,14 @@ async def fetch_wellfound_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                 async with session.get(url, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                     if resp.status == 200:
                         html = await resp.text()
+                        log_api_event("wellfound", "role_page", resp.status, payload=html, role_slug=slug)
                         jobs = parse_wellfound_html(html, seen_ids, slug)
                         new_jobs.extend(jobs)
                     else:
+                        log_api_event("wellfound", "role_page", resp.status, role_slug=slug)
                         logger.debug(f"Wellfound {slug}: HTTP {resp.status}")
             except Exception as e:
+                log_api_event("wellfound", "role_page", "exception", role_slug=slug, error=str(e))
                 logger.debug(f"Wellfound {slug} error: {e}")
             await asyncio.sleep(1)  # Be gentle
 
@@ -114,11 +89,7 @@ def parse_wellfound_html(html: str, seen_ids: set[str], role_slug: str) -> list[
     except json.JSONDecodeError:
         return jobs
 
-    # Navigate the Apollo cache for job listings
-    props = data.get("props", {}).get("pageProps", {})
-
     # Try to find job listings in various data structures
-    # Wellfound stores data in Apollo cache
     apollo_state = data.get("props", {}).get("pageProps", {}).get("apolloState", {})
     if not apollo_state:
         apollo_state = data.get("props", {}).get("pageProps", {}).get("__APOLLO_STATE__", {})
@@ -179,7 +150,3 @@ def parse_wellfound_html(html: str, seen_ids: set[str], role_slug: str) -> list[
         ))
 
     return jobs
-
-
-# Need to import asyncio for the sleep in fetch function
-import asyncio

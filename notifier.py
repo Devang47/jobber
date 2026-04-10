@@ -1,14 +1,23 @@
+from __future__ import annotations
+
 import asyncio
-import json
 import logging
 import ssl
 import uuid
 from datetime import datetime
 from html import escape
 
-import aiohttp
-import certifi
+try:
+    import aiohttp
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    aiohttp = None
 
+try:
+    import certifi
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    certifi = None
+
+from api_logger import log_api_event
 from models import JobPosting
 from config import Config
 
@@ -19,14 +28,13 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}"
 # Bot commands to register with Telegram
 BOT_COMMANDS = [
     {"command": "help", "description": "Show all commands"},
-    {"command": "start", "description": "Start a platform (reddit/wellfound/discord/upwork/freelancer/all)"},
-    {"command": "stop", "description": "Stop a platform or all"},
-    {"command": "scan", "description": "One-time scan all platforms"},
-    {"command": "status", "description": "Show which platforms are running"},
+    {"command": "start", "description": "Schedule a platform every 15 minutes"},
+    {"command": "stop", "description": "Stop scheduled platform updates"},
+    {"command": "scan", "description": "Run an immediate one-time platform scan"},
+    {"command": "status", "description": "Show active scheduled platforms"},
     {"command": "profile", "description": "View your profile"},
     {"command": "set", "description": "Set profile field (name/github/portfolio/rate/skills)"},
     {"command": "users", "description": "List registered users"},
-    {"command": "alert", "description": "Route alerts to a specific user or all"},
 ]
 
 
@@ -49,9 +57,16 @@ class TelegramNotifier:
         self.pending_proposals: dict[str, str] = {}
 
     def _ssl_ctx(self):
+        if certifi is None:
+            return ssl.create_default_context()
         return ssl.create_default_context(cafile=certifi.where())
 
+    def _ensure_http_dependencies(self) -> None:
+        if aiohttp is None:
+            raise RuntimeError("aiohttp is required for Telegram notifications")
+
     async def _get_session(self) -> aiohttp.ClientSession:
+        self._ensure_http_dependencies()
         if self._session is None or self._session.closed:
             ssl_ctx = self._ssl_ctx()
             conn = aiohttp.TCPConnector(ssl=ssl_ctx)
@@ -67,12 +82,14 @@ class TelegramNotifier:
         url = f"{self._base_url}/{method}"
         try:
             async with session.post(url, json=params, ssl=self._ssl_ctx()) as resp:
-                data = await resp.json()
+                data = await resp.json(content_type=None)
+                log_api_event("telegram", method, resp.status, payload=data)
                 if not data.get("ok"):
                     logger.error(f"Telegram API {method} error: {data}")
                     return None
                 return data.get("result")
         except Exception as e:
+            log_api_event("telegram", method, "exception", error=str(e))
             logger.error(f"Telegram {method} failed: {e}")
             return None
 
@@ -164,7 +181,8 @@ class TelegramNotifier:
         try:
             async with session.post(url, json=params, ssl=self._ssl_ctx(),
                                     timeout=aiohttp.ClientTimeout(total=timeout + 10)) as resp:
-                data = await resp.json()
+                data = await resp.json(content_type=None)
+                log_api_event("telegram", "getUpdates", resp.status, payload=data)
                 if not data.get("ok"):
                     return []
                 updates = data.get("result", [])
@@ -174,6 +192,7 @@ class TelegramNotifier:
         except asyncio.TimeoutError:
             return []
         except Exception as e:
+            log_api_event("telegram", "getUpdates", "exception", error=str(e))
             logger.error(f"getUpdates failed: {e}")
             return []
 

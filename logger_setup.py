@@ -5,6 +5,11 @@ from logging.handlers import RotatingFileHandler
 
 def setup_logging(level: str = "INFO"):
     os.makedirs("logs", exist_ok=True)
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+    if getattr(setup_logging, "_configured", False):
+        return
 
     formatter = logging.Formatter(
         "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
@@ -19,7 +24,6 @@ def setup_logging(level: str = "INFO"):
     )
     file_handler.setFormatter(formatter)
 
-    root = logging.getLogger()
-    root.setLevel(getattr(logging, level.upper(), logging.INFO))
     root.addHandler(console)
     root.addHandler(file_handler)
+    setup_logging._configured = True

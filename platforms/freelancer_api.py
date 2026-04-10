@@ -3,9 +3,17 @@
 import logging
 import ssl
 
-import aiohttp
-import certifi
+try:
+    import aiohttp
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    aiohttp = None
 
+try:
+    import certifi
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    certifi = None
+
+from api_logger import log_api_event
 from .base import PlatformJob
 
 logger = logging.getLogger(__name__)
@@ -34,7 +42,9 @@ SKILL_IDS = [
 
 async def fetch_freelancer_jobs(seen_ids: set[str]) -> list[PlatformJob]:
     """Fetch latest developer jobs from Freelancer.com."""
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    if aiohttp is None:
+        raise RuntimeError("aiohttp is required to fetch Freelancer jobs")
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where()) if certifi else ssl.create_default_context()
     conn = aiohttp.TCPConnector(ssl=ssl_ctx)
     new_jobs = []
 
@@ -61,6 +71,7 @@ async def fetch_freelancer_jobs(seen_ids: set[str]) -> list[PlatformJob]:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
+                    log_api_event("freelancer", "projects", resp.status, payload=data)
                     projects = data.get("result", {}).get("projects", [])
 
                     for proj in projects:
@@ -107,8 +118,10 @@ async def fetch_freelancer_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                             job_id=pid,
                         ))
                 else:
+                    log_api_event("freelancer", "projects", resp.status)
                     logger.debug(f"Freelancer API: HTTP {resp.status}")
     except Exception as e:
+        log_api_event("freelancer", "projects", "exception", error=str(e))
         logger.error(f"Freelancer fetch error: {e}")
 
     logger.info(f"Freelancer: {len(new_jobs)} new jobs")

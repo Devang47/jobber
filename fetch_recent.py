@@ -5,13 +5,11 @@ classify them with Groq, and send matching jobs to Telegram.
 
 import asyncio
 import ssl
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import certifi
-from groq import AsyncGroq
 
 from config import Config
 from prefilter import PreFilter

@@ -1,13 +1,21 @@
 """Reddit job monitor — r/forhire, r/freelance, r/remotejs, etc."""
 
 import logging
-import ssl
 import re
+import ssl
 import time
 
-import aiohttp
-import certifi
+try:
+    import aiohttp
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    aiohttp = None
 
+try:
+    import certifi
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    certifi = None
+
+from api_logger import log_api_event
 from .base import PlatformJob
 
 logger = logging.getLogger(__name__)
@@ -43,7 +51,9 @@ FOR_HIRE_TAG = re.compile(r"\[for\s*hire\]", re.IGNORECASE)
 
 async def fetch_reddit_jobs(seen_ids: set[str]) -> list[PlatformJob]:
     """Fetch latest hiring posts from freelancing subreddits."""
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    if aiohttp is None:
+        raise RuntimeError("aiohttp is required to fetch Reddit jobs")
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where()) if certifi else ssl.create_default_context()
     conn = aiohttp.TCPConnector(ssl=ssl_ctx)
     headers = {"User-Agent": "JobMonitor/1.0"}
     new_jobs = []
@@ -55,6 +65,7 @@ async def fetch_reddit_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                 async with session.get(url, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        log_api_event("reddit", "listings", resp.status, payload=data, subreddit=sub)
                         posts = data.get("data", {}).get("children", [])
 
                         for post in posts:
@@ -106,10 +117,13 @@ async def fetch_reddit_jobs(seen_ids: set[str]) -> list[PlatformJob]:
                                 job_id=post_id,
                             ))
                     elif resp.status == 429:
+                        log_api_event("reddit", "listings", resp.status, subreddit=sub)
                         logger.debug(f"Reddit rate limited on r/{sub}")
                     else:
+                        log_api_event("reddit", "listings", resp.status, subreddit=sub)
                         logger.debug(f"Reddit r/{sub}: HTTP {resp.status}")
             except Exception as e:
+                log_api_event("reddit", "listings", "exception", subreddit=sub, error=str(e))
                 logger.debug(f"Reddit r/{sub} error: {e}")
 
     logger.info(f"Reddit: {len(new_jobs)} new jobs")

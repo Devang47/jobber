@@ -1,6 +1,11 @@
 import os
-from dataclasses import dataclass, field
-from dotenv import load_dotenv
+from dataclasses import dataclass
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - exercised only in dependency-light test envs
+    def load_dotenv():
+        return False
 
 
 @dataclass
@@ -17,6 +22,8 @@ class Config:
     reconnect_delay: int
     max_reconnect_attempts: int
     telegram_cooldown: int
+    schedule_interval_seconds: int
+    schedule_db_path: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -62,4 +69,6 @@ class Config:
             reconnect_delay=int(os.getenv("RECONNECT_DELAY_SECONDS", "5")),
             max_reconnect_attempts=int(os.getenv("MAX_RECONNECT_ATTEMPTS", "10")),
             telegram_cooldown=int(os.getenv("TELEGRAM_COOLDOWN_SECONDS", "30")),
+            schedule_interval_seconds=int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "900")),
+            schedule_db_path=os.getenv("SCHEDULE_DB_PATH", "schedule_state.db"),
         )
