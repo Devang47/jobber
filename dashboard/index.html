@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jobber Control Center</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Operations Console</p>
+          <h1>Jobber Control Center</h1>
+          <p class="hero-copy">
+            Track scheduled platform jobs, API health, and live log output from one place.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="refresh-button" class="primary-button">Refresh Data</button>
+          <div class="timestamp-block">
+            <span>Last refresh</span>
+            <strong id="generated-at">Never</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="stats-grid" id="stats-grid"></section>
+
+      <section class="panel-grid">
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Scheduler</p>
+              <h2>Platform Job Status</h2>
+            </div>
+            <span class="pill">SQLite-backed</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Chat</th>
+                  <th>Platform</th>
+                  <th>Status</th>
+                  <th>Last Run</th>
+                  <th>Results</th>
+                  <th>Seen Jobs</th>
+                </tr>
+              </thead>
+              <tbody id="platform-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Connectivity</p>
+              <h2>API Status</h2>
+            </div>
+            <span class="pill">Persistent logs</span>
+          </div>
+          <div id="api-status-list" class="stack-list"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid lower-grid">
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Logs</p>
+              <h2>API Event Stream</h2>
+            </div>
+            <div class="toolbar">
+              <label class="filter">
+                <span>Source</span>
+                <select id="source-filter">
+                  <option value="">All</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div id="api-log-list" class="log-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Runtime</p>
+              <h2>Monitor Log Tail</h2>
+            </div>
+            <span class="pill ghost">Plain text</span>
+          </div>
+          <pre id="monitor-log" class="terminal-panel"></pre>
+        </article>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>

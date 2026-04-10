@@ -81,6 +81,9 @@ Optional values:
 # Full Telegram-controlled bot
 .venv/bin/python3 bot.py
 
+# Web dashboard for scheduler, API status, and logs
+.venv/bin/python3 dashboard_server.py --host 127.0.0.1 --port 8787
+
 # Discord-only live monitor
 .venv/bin/python3 main.py
 
@@ -96,6 +99,7 @@ Optional values:
 - `schedule_state.db` stores active chat/platform schedules, dedupe state, and active run locks
 - `logs/monitor.log` stores application logs
 - `logs/api/*.jsonl` stores persistent structured API response logs
+- `dashboard_server.py` serves a local UI for status, API health, and log viewing
 
 ## Tests
 
@@ -107,6 +111,8 @@ python3 -m unittest discover -s tests
 
 ```text
 bot.py              - Telegram-controlled scheduler and delivery pipeline
+dashboard_server.py - Local dashboard web server
+dashboard_data.py   - Dashboard data aggregation from SQLite and logs
 main.py             - Standalone Discord live monitor
 pipeline.py         - Standalone Reddit + Wellfound polling pipeline
 mass_apply.py       - One-time mass scan plus proposal generation
@@ -121,6 +127,10 @@ notifier.py         - Telegram Bot API notifications
 auto_apply.py       - Proposal generation and Discord DM sending
 profiles.py         - Per-user Telegram profile storage
 models.py           - Shared data models
+dashboard/
+  index.html        - Dashboard shell
+  app.js            - Dashboard client logic
+  styles.css        - Dashboard styling
 platforms/
   base.py           - Shared platform job model
   reddit.py         - Reddit monitor
