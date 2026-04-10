@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 
+API_HEALTH_WINDOW = 20
+API_HEALTH_ERROR_THRESHOLD = 3
+API_HEALTH_ERROR_RATIO = 0.3
+
+
 def _safe_iso_sort_key(value: str | None) -> tuple[int, str]:
     if not value:
         return (0, "")
@@ -136,6 +141,42 @@ def _read_jsonl_entries(file_path: Path, limit: int | None = None) -> list[dict[
     return entries
 
 
+def _is_error_status(status: str) -> bool:
+    return status.startswith(("4", "5")) or status == "exception"
+
+
+def summarize_source_health(entries: list[dict[str, Any]], window: int = API_HEALTH_WINDOW) -> dict[str, Any]:
+    latest = entries[0] if entries else {}
+    latest_status = str(latest.get("status", "unknown"))
+    latest_is_error = _is_error_status(latest_status)
+    sample = entries[:window]
+    recent_error_count = sum(1 for entry in sample if _is_error_status(str(entry.get("status", ""))))
+    sample_size = len(sample)
+    error_ratio = (recent_error_count / sample_size) if sample_size else 0.0
+    degraded = latest_is_error or (
+        recent_error_count >= API_HEALTH_ERROR_THRESHOLD
+        and error_ratio >= API_HEALTH_ERROR_RATIO
+    )
+
+    if latest_is_error:
+        health = "down"
+    elif degraded:
+        health = "degraded"
+    else:
+        health = "healthy"
+
+    return {
+        "latest_status": latest_status,
+        "latest_action": latest.get("action"),
+        "latest_timestamp": latest.get("timestamp"),
+        "recent_error_count": recent_error_count,
+        "sample_size": sample_size,
+        "error_ratio": error_ratio,
+        "healthy": health == "healthy",
+        "health": health,
+    }
+
+
 def load_api_status(log_root: str | Path, limit_per_source: int = 200) -> dict[str, Any]:
     root = Path(log_root)
     if not root.exists():
@@ -150,19 +191,12 @@ def load_api_status(log_root: str | Path, limit_per_source: int = 200) -> dict[s
 
     sources = []
     for source, entries in sorted(source_entries.items()):
-        latest = entries[0] if entries else {}
-        latest_status = str(latest.get("status", "unknown"))
-        recent_errors = sum(1 for entry in entries[:20] if str(entry.get("status", "")).startswith(("4", "5")) or entry.get("status") == "exception")
-        healthy = latest_status not in {"exception", "already_running", "missing_dependency"} and not latest_status.startswith(("4", "5"))
+        health_summary = summarize_source_health(entries)
 
         sources.append(
             {
                 "source": source,
-                "latest_status": latest_status,
-                "latest_action": latest.get("action"),
-                "latest_timestamp": latest.get("timestamp"),
-                "recent_error_count": recent_errors,
-                "healthy": healthy,
+                **health_summary,
             }
         )
 

@@ -53,3 +53,24 @@ class DashboardDataTests(unittest.TestCase):
             self.assertEqual(status["summary"]["sources"], 2)
             self.assertEqual(len(snapshot["recent_api_logs"]), 2)
             self.assertEqual(snapshot["monitor_log_tail"][-1], "line-2")
+
+    def test_api_status_marks_source_unhealthy_when_recent_errors_accumulate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_root = Path(temp_dir) / "api"
+
+            original_root = api_logger.LOG_ROOT
+            api_logger.LOG_ROOT = log_root
+            try:
+                for _ in range(17):
+                    api_logger.log_api_event("discord", "channel_messages", "exception", error="boom")
+                api_logger.log_api_event("discord", "history_run", 200, payload={"jobs_found": 3})
+            finally:
+                api_logger.LOG_ROOT = original_root
+
+            status = load_api_status(log_root)
+            discord = next(source for source in status["sources"] if source["source"] == "discord")
+
+            self.assertEqual(discord["latest_status"], "200")
+            self.assertEqual(discord["recent_error_count"], 17)
+            self.assertFalse(discord["healthy"])
+            self.assertEqual(discord["health"], "degraded")

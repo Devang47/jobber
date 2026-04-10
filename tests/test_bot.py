@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import api_logger
 from bot import JobBot
 from config import Config
 from notifier import TelegramNotifier
@@ -90,6 +91,9 @@ class JobBotTests(unittest.IsolatedAsyncioTestCase):
         self.notifier = FakeNotifier()
         self.fetch_calls = 0
         self.proposal_calls = 0
+        self.original_log_root = api_logger.LOG_ROOT
+        self.api_log_root = Path(self.temp_dir.name) / "api_logs"
+        api_logger.LOG_ROOT = self.api_log_root
 
         async def fetch_reddit(seen_ids):
             self.fetch_calls += 1
@@ -118,6 +122,7 @@ class JobBotTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        api_logger.LOG_ROOT = self.original_log_root
         await self.bot.shutdown_schedules()
         self.store.close()
         self.temp_dir.cleanup()
@@ -217,6 +222,24 @@ class JobBotTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.restore_schedules()
         self.assertFalse(self.store.get_subscriptions(-999))
         self.assertNotIn((-999, "discord"), self.bot.scheduled_jobs)
+
+    async def test_platform_health_sends_warning_and_sets_last_error(self):
+        async def noisy_fetcher(seen_ids):
+            api_logger.log_api_event("reddit", "listings", "exception", error="boom")
+            api_logger.log_api_event("reddit", "listings", "exception", error="boom")
+            api_logger.log_api_event("reddit", "listings", "exception", error="boom")
+            api_logger.log_api_event("reddit", "listings", 200, payload={"ok": True})
+            if "job-1" not in seen_ids:
+                seen_ids.add("job-1")
+                return [make_job()]
+            return []
+
+        self.bot.fetchers["reddit"] = noisy_fetcher
+        await self.bot.run_platform_cycle(42, "42", "reddit", scheduled=False)
+
+        self.assertTrue(any("API issue detected" in message[1] for message in self.notifier.text_messages))
+        state = self.store.get_run_state(42, "reddit")
+        self.assertIn("Reddit API is degraded", state["last_error"])
 
     async def test_reddit_job_card_includes_subreddit(self):
         await self.bot.run_platform_cycle(42, "42", "reddit", scheduled=False)

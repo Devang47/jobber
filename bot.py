@@ -8,14 +8,17 @@ Core behavior:
 """
 
 import asyncio
+import json
 import logging
 import signal
 import uuid
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 
+import api_logger
 from api_logger import log_api_event
 from config import Config
+from dashboard_data import summarize_source_health
 from job_relevance import RelevanceResult, evaluate_job
 from logger_setup import setup_logging
 from notifier import TelegramNotifier
@@ -121,6 +124,7 @@ class JobBot:
         self.proposal_generator = proposal_generator or self._generate_proposal_with_groq
         self.shutdown = asyncio.Event()
         self.scheduled_jobs: dict[tuple[int, str], asyncio.Task] = {}
+        self.platform_health_state: dict[tuple[int, str], str] = {}
         self._groq_client = None
 
     def _build_default_fetchers(self) -> dict[str, object]:
@@ -493,6 +497,68 @@ class JobBot:
                 pass
             self.scheduled_jobs.pop(key, None)
 
+    def _get_platform_health(self, platform: str) -> dict | None:
+        log_path = api_logger.LOG_ROOT / f"{platform}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
+        if not log_path.exists():
+            return None
+
+        entries = []
+        with log_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        entries.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+        if not entries:
+            return None
+        return summarize_source_health(entries)
+
+    async def _notify_platform_health(self, chat_id: int, platform: str) -> str | None:
+        summary = self._get_platform_health(platform)
+        if not summary:
+            return None
+
+        health = str(summary.get("health", "healthy"))
+        key = (chat_id, platform)
+        previous = self.platform_health_state.get(key)
+        self.platform_health_state[key] = health
+
+        if health == "healthy":
+            if previous in {"degraded", "down"}:
+                await self.notifier.send_text(
+                    (
+                        f"<b>{platform.title()} API recovered</b>\n"
+                        f"Latest action: {html_escape(str(summary.get('latest_action') or 'n/a'))}\n"
+                        f"Recent errors: {summary.get('recent_error_count', 0)}/{summary.get('sample_size', 0)}"
+                    ),
+                    chat_id,
+                )
+            return None
+
+        warning = (
+            f"{platform.title()} API is {health}. "
+            f"Latest status: {summary.get('latest_status')} | "
+            f"Recent errors: {summary.get('recent_error_count', 0)}/{summary.get('sample_size', 0)}"
+        )
+        logger.warning(warning)
+        if previous != health:
+            await self.notifier.send_text(
+                (
+                    f"<b>{platform.title()} API issue detected</b>\n"
+                    f"Health: {html_escape(health.title())}\n"
+                    f"Latest action: {html_escape(str(summary.get('latest_action') or 'n/a'))}\n"
+                    f"Latest status: {html_escape(str(summary.get('latest_status') or 'unknown'))}\n"
+                    f"Recent errors: {summary.get('recent_error_count', 0)}/{summary.get('sample_size', 0)}"
+                ),
+                chat_id,
+            )
+        return warning
+
     def _ensure_schedule(self, chat_id: int, platform: str) -> None:
         key = (chat_id, platform)
         task = self.scheduled_jobs.get(key)
@@ -570,12 +636,13 @@ class JobBot:
             limited_jobs = scored_jobs[:MAX_JOBS_PER_RUN]
 
             await self._send_run_results(chat_id, user_id, platform, limited_jobs, len(scored_jobs), scheduled=scheduled)
+            health_warning = await self._notify_platform_health(chat_id, platform)
             self.schedule_store.set_run_state(
                 chat_id,
                 platform,
                 last_run_at=started_at_iso,
                 last_result_count=len(scored_jobs),
-                last_error=None,
+                last_error=health_warning,
             )
             log_api_event(
                 "scheduler",
